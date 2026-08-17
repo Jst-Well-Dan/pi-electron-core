@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*;">
+  <title>pi-electron-core</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <div class="app-layout">
+
+      <!-- ============ 全局顶栏（磨砂穿透） ============ -->
+      <header class="app-header">
+        <div class="header-left">
+          <div class="brand-badge">
+            <div class="brand-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                <path d="M2 17l10 5 10-5"></path>
+                <path d="M2 12l10 5 10-5"></path>
+              </svg>
+            </div>
+            <div class="brand-text">
+              <span class="brand-title">pi-electron-core</span>
+              <span class="brand-subtitle">Desktop Workbench</span>
+            </div>
+          </div>
+          <!-- 独立 app 无页面 tab：仅设置页，主内容即通用设置 -->
+        </div>
+        <div class="header-right">
+          <div class="header-date" id="today-label"></div>
+          <div class="agent-status-badge ready" id="pi-status" title="Agent 运行状态">
+            <span class="status-indicator-dot"></span>
+            <span class="status-indicator-text">Agent 已就绪</span>
+          </div>
+          <button class="icon-btn" id="sidebar-toggle" type="button" aria-expanded="true" aria-controls="agent-sidebar" title="展开/收起 Agent 侧栏 (Ctrl+B)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+              <line x1="15" y1="3" x2="15" y2="21"></line>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- ============ 主体：主内容 + 常驻 Agent 侧栏 ============ -->
+      <div class="app-body">
+        <main class="main-content">
+          <section id="page-settings" class="page-view active" role="tabpanel" data-canvas="#F4F3EE">
+            <div class="settings-page-wrap">
+              <div class="page-eyebrow-header">
+                <span class="eyebrow-text">SETTINGS</span>
+                <h1 class="page-main-title">设置</h1>
+                <p class="page-subtitle">模型 / 凭证 / 飞书 / 其他四类设置由 pi-electron-core 提供，业务凭证由应用注册。</p>
+              </div>
+              <div id="settings-root"></div>
+            </div>
+          </section>
+        </main>
+
+        <aside class="agent-sidebar" id="agent-sidebar">
+          <div class="agent-sidebar-header">
+            <div class="agent-title-wrap">
+              <span class="agent-eyebrow">AGENT</span>
+              <div class="agent-name-row">
+                <span class="agent-dot-indicator" id="agent-dot"></span>
+                <span class="agent-name">Agent</span>
+              </div>
+            </div>
+            <div class="agent-header-actions">
+              <span class="agent-session-badge" id="chat-session-tag">会话</span>
+              <button class="icon-btn-sm" id="btn-chat-new" type="button" title="新对话">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="agent-messages-container" id="chat-messages"></div>
+
+          <div class="agent-input-container">
+            <div class="agent-input-card">
+              <textarea class="agent-textarea" id="chat-input" rows="2" placeholder="输入问题…（Enter 发送，Shift+Enter 换行）"></textarea>
+              <div class="agent-input-toolbar">
+                <div class="input-tool-hints">
+                  <span class="hint-key">Enter</span> 发送 · <span class="hint-key">Shift+Enter</span> 换行
+                </div>
+                <div class="input-actions">
+                  <button class="btn btn-ghost btn-sm" id="btn-chat-abort" type="button" title="中止当前回复">中止</button>
+                  <button class="btn btn-primary btn-sm" id="btn-chat-send" type="button">发送</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="lib/markdown.js"></script>
+  <script src="app.js"></script>
+  <script src="pages/chat.js"></script>
+  <script src="pages/settings-page.js"></script>
+  <script src="shell.js"></script>
+</body>
+</html>
