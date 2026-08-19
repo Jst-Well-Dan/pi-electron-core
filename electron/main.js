@@ -117,6 +117,9 @@ app.whenReady().then(async () => {
 
   const credentialStore = new CredentialStore({ file: path.join(DATA_DIR, 'credentials.json') });
   const feishuManager = new FeishuManager({ projectRoot: PROJECT_ROOT });
+  feishuManager.autoStartOnLaunch().catch((error) => {
+    console.error('[feishu] autoStartOnLaunch failed:', error instanceof Error ? error.message : error);
+  });
   const dataRoot = {
     get: () => ({ dataRoot: PROJECT_ROOT, appRoot: PROJECT_ROOT, isPackaged: app.isPackaged, configurable: false }),
   };

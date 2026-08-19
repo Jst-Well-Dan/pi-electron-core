@@ -33,6 +33,28 @@ test('FeishuManager stores config under project .pi/feishu by default', () => {
   assert.equal(saved.cardActionMode, 'ws');
 });
 
+test('FeishuManager autoStartOnLaunch starts configured gateway when enabled', async () => {
+  const projectRoot = tempProject();
+  const manager = new FeishuManager({ projectRoot });
+  manager.saveConfig({
+    appId: 'cli_test_autostart',
+    appSecret: 'secret_for_autostart',
+    domain: 'feishu',
+    groupPolicy: 'mention',
+    autoStart: true,
+  });
+
+  let called = '';
+  manager.command = async (name) => {
+    called = name;
+    return { ok: true, status: manager.getStatus() };
+  };
+
+  const result = await manager.autoStartOnLaunch();
+  assert.equal(called, 'start');
+  assert.equal(result.ok, true);
+});
+
 test('FeishuManager loads bundled extension in isolated pi RPC child', async () => {
   const projectRoot = tempProject();
   const instances = [];

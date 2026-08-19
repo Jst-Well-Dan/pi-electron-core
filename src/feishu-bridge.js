@@ -82,6 +82,13 @@ class FeishuManager extends EventEmitter {
     };
   }
 
+  async autoStartOnLaunch() {
+    const status = this.getStatus();
+    if (!status.configured) return { ok: false, skipped: 'not-configured', status };
+    if (!status.autoStart) return { ok: false, skipped: 'disabled', status };
+    return this.command('start');
+  }
+
   saveConfig(input = {}) {
     if (process.env.FEISHU_APP_ID?.trim() && process.env.FEISHU_APP_SECRET?.trim()) {
       throw new Error('飞书凭证由环境变量管理，无法在应用中修改。');

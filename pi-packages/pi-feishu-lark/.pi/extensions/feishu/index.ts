@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -9,7 +9,7 @@ import { FeishuBridgeRuntime } from "./bridge-runtime.js";
 import { FeishuBridgeStore } from "./bridge-store.js";
 import { ConversationManager } from "./conversation-manager.js";
 import { FeishuDelivery } from "./delivery.js";
-import { acquireGatewayLock, gatewayLockPath, readGatewayOwner, type GatewayLockHandle, type GatewayOwner } from "./gateway-lock.js";
+import { acquireGatewayLock, gatewayLockPath, readGatewayOwner, readGatewayOwnerRaw, reapStaleGatewayLock, isGatewayOwnerStale, type GatewayLockHandle, type GatewayOwner } from "./gateway-lock.js";
 import { FeishuMessageHandler } from "./message-handler.js";
 import { runSetup, uiConfirm } from "./setup.js";
 import { RUNTIME_OVERRIDES_PATH } from "./runtime-config.js";
@@ -266,15 +266,54 @@ export default function feishuExtension(pi: ExtensionAPI) {
   async function startDaemon(takeover = false) {
     return withDaemonSpawnLock(async () => {
       const cfg = loadConfig();
-      if (!cfg) throw new Error(`Missing config. Run /feishu setup first. 配置不存在，请先运行 /feishu setup。`);
+      const spec = daemonSpec();
+      debugLog("feishu.daemon.start_requested", {
+        launcherPid: process.pid,
+        takeover,
+        hasConfig: Boolean(cfg),
+        cwd: process.cwd(),
+        rootDir: ROOT_DIR,
+        piBin: spec.piBin,
+        extensionPath: spec.extensionPath,
+        daemonLogPath: DAEMON_LOG_PATH,
+      });
+      if (!cfg) {
+        debugLog("feishu.daemon.start_missing_config", { launcherPid: process.pid, rootDir: ROOT_DIR });
+        throw new Error(`Missing config. Run /feishu setup first. 配置不存在，请先运行 /feishu setup。`);
+      }
+
+      // 死锁回收：启动前若存在 stale 锁（进程已消亡 / 心跳超时 / PID 被复用），
+      // 先清理占位再决定是否接管，避免开机后残留锁把自动启动误判为 busy。
+      const rawOwner = readGatewayOwnerRaw();
+      if (rawOwner && isGatewayOwnerStale(rawOwner)) {
+        const reaped = await reapStaleGatewayLock();
+        debugLog("feishu.daemon.stale_reap_checked", {
+          launcherPid: process.pid,
+          result: reaped.status,
+          ownerPid: rawOwner.pid,
+          ownerStatus: rawOwner.status,
+          ownerHeartbeatAt: rawOwner.heartbeatAt,
+          reason: reaped.status === "reaped" || reaped.status === "error" ? reaped.reason : undefined,
+        });
+      }
+
       let owner = readGatewayOwner();
       if (owner && owner.pid !== process.pid && !takeover) {
+        debugLog("feishu.daemon.start_busy", {
+          launcherPid: process.pid,
+          ownerPid: owner.pid,
+          ownerStatus: owner.status,
+          ownerHeartbeatAt: owner.heartbeatAt,
+          ownerCwd: owner.cwd,
+        });
         return { status: "busy" as const, owner };
       }
 
       if (owner?.pid === process.pid || transport?.isRunning()) {
+        debugLog("feishu.daemon.start_reset_current", { launcherPid: process.pid, ownerPid: owner?.pid, transportRunning: transport?.isRunning() });
         await stop();
       } else if (owner && takeover) {
+        debugLog("feishu.daemon.takeover_kill_owner", { launcherPid: process.pid, ownerPid: owner.pid, ownerStatus: owner.status });
         try { process.kill(owner.pid, "SIGTERM"); } catch {}
         await sleep(800);
       }
@@ -283,23 +322,57 @@ export default function feishuExtension(pi: ExtensionAPI) {
       // while this process was waiting for the lock.
       owner = readGatewayOwner();
       if (owner && owner.pid !== process.pid && !takeover) {
+        debugLog("feishu.daemon.start_busy_after_recheck", {
+          launcherPid: process.pid,
+          ownerPid: owner.pid,
+          ownerStatus: owner.status,
+          ownerHeartbeatAt: owner.heartbeatAt,
+          ownerCwd: owner.cwd,
+        });
         return { status: "busy" as const, owner };
       }
 
-      const { extensionPath } = daemonSpec();
-      reapDetachedDaemonProcesses({ keepPids: [process.pid], extensionPath, rootDir: ROOT_DIR });
+      reapDetachedDaemonProcesses({ keepPids: [process.pid], extensionPath: spec.extensionPath, rootDir: ROOT_DIR });
       ensureRoot();
+      trimDaemonLogIfNeeded();
       const logFd = openSync(DAEMON_LOG_PATH, "a");
-      const child = spawn("bash", ["-lc", daemonCommand()], {
-        detached: true,
-        cwd: process.cwd(),
-        env: { ...process.env, PI_FEISHU_DAEMON: "1", PI_FEISHU_ROOT: ROOT_DIR },
-        stdio: ["ignore", logFd, logFd],
+      let child;
+      try {
+        child = spawn("bash", ["-lc", daemonCommand()], {
+          detached: true,
+          cwd: process.cwd(),
+          env: { ...process.env, PI_FEISHU_DAEMON: "1", PI_FEISHU_ROOT: ROOT_DIR },
+          stdio: ["ignore", logFd, logFd],
+        });
+      } catch (error) {
+        debugLog("feishu.daemon.spawn_throw", {
+          launcherPid: process.pid,
+          error: error instanceof Error ? error.message : String(error),
+          piBin: spec.piBin,
+          extensionPath: spec.extensionPath,
+        });
+        throw error;
+      }
+      debugLog("feishu.daemon.spawned", { launcherPid: process.pid, wrapperPid: child.pid, command: daemonCommand() });
+      child.once("error", (error) => {
+        debugLog("feishu.daemon.child_error", { launcherPid: process.pid, wrapperPid: child.pid, error: error.message });
+      });
+      child.once("exit", (code, signal) => {
+        debugLog("feishu.daemon.child_exit", { launcherPid: process.pid, wrapperPid: child.pid, code, signal });
       });
       child.unref();
 
       await sleep(1500);
-      return { status: "started" as const, pid: child.pid, owner: readGatewayOwner() };
+      const ownerAfterSpawn = readGatewayOwner();
+      debugLog("feishu.daemon.spawn_result", {
+        launcherPid: process.pid,
+        wrapperPid: child.pid,
+        ownerPid: ownerAfterSpawn?.pid,
+        ownerStatus: ownerAfterSpawn?.status,
+        ownerHeartbeatAt: ownerAfterSpawn?.heartbeatAt,
+        ownerCwd: ownerAfterSpawn?.cwd,
+      });
+      return { status: "started" as const, pid: child.pid, owner: ownerAfterSpawn };
     });
   }
 
@@ -458,20 +531,40 @@ export default function feishuExtension(pi: ExtensionAPI) {
   });
 
   if (bootConfig && bootConfig.autoStart !== false) {
+    debugLog("feishu.autostart.enabled", {
+      pid: process.pid,
+      isDaemon: process.env.PI_FEISHU_DAEMON === "1",
+      cwd: process.cwd(),
+      rootDir: ROOT_DIR,
+    });
     if (process.env.PI_FEISHU_DAEMON === "1") {
+      debugLog("feishu.autostart.daemon_starting", { pid: process.pid, cwd: process.cwd(), rootDir: ROOT_DIR });
       start().then((result) => {
         if (typeof result === "object" && result.status === "owned") {
+          debugLog("feishu.autostart.daemon_owned_exit", { pid: process.pid, ownerPid: result.owner.pid, ownerStatus: result.owner.status, ownerHeartbeatAt: result.owner.heartbeatAt });
           console.error("[feishu] daemon found existing owner, exiting:", formatOwner(result.owner));
           process.exit(0);
         }
+        debugLog("feishu.autostart.daemon_connected", { pid: process.pid, result });
       }).catch((error) => {
         updateStatus(error instanceof BotUnavailableError ? "bot unavailable" : "disconnected");
+        debugLog("feishu.autostart.daemon_failed", { pid: process.pid, error: error instanceof Error ? error.message : String(error) });
         console.error("[feishu] daemon autoStart failed:", error instanceof Error ? error.message : error);
         process.exit(1);
       });
     } else {
-      startDaemon(false).catch((error) => {
+      startDaemon(false).then((result) => {
+        debugLog("feishu.autostart.launcher_result", {
+          pid: process.pid,
+          status: result.status,
+          wrapperPid: result.status === "started" ? result.pid : undefined,
+          ownerPid: result.owner?.pid,
+          ownerStatus: result.owner?.status,
+          ownerHeartbeatAt: result.owner?.heartbeatAt,
+        });
+      }).catch((error) => {
         updateStatus("disconnected");
+        debugLog("feishu.autostart.launcher_failed", { pid: process.pid, error: error instanceof Error ? error.message : String(error) });
         console.error("[feishu] daemon spawn failed:", error instanceof Error ? error.message : error);
       });
     }
@@ -496,6 +589,34 @@ type DaemonProcessInfo = {
   ppid: number;
   command: string;
 };
+
+const DAEMON_LOG_MAX_BYTES = 500 * 1024;
+const DAEMON_LOG_KEEP_LINES = 1000;
+
+function trimDaemonLogIfNeeded() {
+  try {
+    if (!existsSync(DAEMON_LOG_PATH)) return;
+    const stat = statSync(DAEMON_LOG_PATH);
+    if (stat.size <= DAEMON_LOG_MAX_BYTES) return;
+    const content = readFileSync(DAEMON_LOG_PATH, "utf8");
+    const lines = content.split("\n");
+    const hasTrailingNewline = lines[lines.length - 1] === "";
+    const effectiveLines = hasTrailingNewline ? lines.slice(0, -1) : lines;
+    const recent = effectiveLines.slice(-DAEMON_LOG_KEEP_LINES);
+    writeFileSync(DAEMON_LOG_PATH, `${recent.join("\n")}\n`, "utf8");
+    debugLog("feishu.daemon.log_trimmed", {
+      path: DAEMON_LOG_PATH,
+      previousBytes: stat.size,
+      keptLines: recent.length,
+      maxBytes: DAEMON_LOG_MAX_BYTES,
+    });
+  } catch (error) {
+    debugLog("feishu.daemon.log_trim_error", {
+      path: DAEMON_LOG_PATH,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 function reapDetachedDaemonProcesses(options: { keepPids?: number[]; extensionPath?: string; rootDir?: string } = {}) {
   if (process.platform === "win32") return;

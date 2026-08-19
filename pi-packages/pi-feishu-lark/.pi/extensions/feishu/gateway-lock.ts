@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve as pathResolve } from "node:path";
 import { LOCKS_PATH } from "./config.js";
 import { debugLog } from "./debug.js";
 
@@ -25,11 +25,19 @@ export type GatewayLockResult =
   | { status: "acquired"; handle: GatewayLockHandle }
   | { status: "busy"; owner: GatewayOwner };
 
+export type GatewayStaleReap =
+  | { status: "reaped"; owner: GatewayOwner; reason: string }
+  | { status: "none" }
+  | { status: "error"; reason: string };
+
 export class GatewayLockHandle {
+  readonly owner: GatewayOwner;
   private heartbeat: NodeJS.Timeout | undefined;
   private onLost: (() => void | Promise<void>) | undefined;
 
-  constructor(readonly owner: GatewayOwner) {}
+  constructor(owner: GatewayOwner) {
+    this.owner = owner;
+  }
 
   setOnLost(handler: () => void | Promise<void>) {
     this.onLost = handler;
@@ -128,6 +136,16 @@ export function readGatewayOwner(): GatewayOwner | undefined {
   return owner && !isStale(owner) ? owner : undefined;
 }
 
+/** 内部只读：返回锁文件中的原始占位，含可能已 stale 的条目（供诊断/回收判断）。 */
+export function readGatewayOwnerRaw(): GatewayOwner | undefined {
+  return asGatewayOwner(readLocksFile()[LOCK_KEY]);
+}
+
+/** 判断某条锁是否已视为 stale（进程消亡 / 心跳超时 / PID 复用导致的 cwd 不匹配）。 */
+export function isGatewayOwnerStale(owner: GatewayOwner | undefined): boolean {
+  return owner ? isStale(owner) : false;
+}
+
 export function gatewayLockPath() {
   return LOCKS_PATH;
 }
@@ -146,7 +164,50 @@ function isStale(owner: GatewayOwner) {
   if (!isProcessAlive(owner.pid)) return true;
   const heartbeatAt = Date.parse(owner.heartbeatAt);
   if (!Number.isFinite(heartbeatAt)) return true;
-  return Date.now() - heartbeatAt > LOCK_STALE_MS;
+  const age = Date.now() - heartbeatAt;
+  if (age > LOCK_STALE_MS) return true;
+  // PID 复用防护：进程虽存活，但 cwd 与本次启动的项目不一致时，
+  // 很可能旧 daemon 已消亡而其 PID 被系统复用给了无关进程。
+  if (owner.cwd && process.cwd()) {
+    try {
+      const same = pathResolve(owner.cwd) === pathResolve(process.cwd());
+      if (!same) return true;
+    } catch {
+      /* fallthrough to heartbeat-only判断 */
+    }
+  }
+  return false;
+}
+
+/**
+ * 死锁回收：主动检查并清理 stale 网关锁（仅当持有文件锁时安全）。
+ * 供 startDaemon 在决定接管前使用，避免因残留锁 + PID 复用导致的误拒。
+ * 必须在 withLocksFileLock 内部调用，返回本次是否清理了占位。
+ */
+function reapStaleOwnerLocked(): GatewayStaleReap {
+  const locks = readLocksFile();
+  const existing = asGatewayOwner(locks[LOCK_KEY]);
+  if (!existing) {
+    return { status: "none" };
+  }
+  if (!isStale(existing)) {
+    return { status: "none" };
+  }
+  delete locks[LOCK_KEY];
+  writeLocksFile(locks);
+  const reason = isProcessAlive(existing.pid)
+    ? `pid ${existing.pid} cwd mismatch or heartbeat stale (heartbeatAt=${existing.heartbeatAt})`
+    : `pid ${existing.pid} no longer alive`;
+  debugLog("feishu.gateway.stale_reaped", { pid: existing.pid, reason });
+  return { status: "reaped", owner: existing, reason };
+}
+
+/**
+ * 对外暴露的死锁回收入口：在文件锁保护下清理 stale 占位。
+ * 若返回 busy 之外的状态，调用方应重新读取 owner 并继续接管流程。
+ */
+export async function reapStaleGatewayLock(): Promise<GatewayStaleReap> {
+  return withLocksFileLock(() => reapStaleOwnerLocked());
 }
 
 function isProcessAlive(pid: number) {
