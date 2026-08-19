@@ -4,6 +4,7 @@
  */
 const { PiRpcClient, resolvePiCommand, childEnv } = require('./src/pi-rpc');
 const { ChatSessionManager } = require('./src/chat-session');
+const { SessionCatalog } = require('./src/session-catalog');
 const { CredentialStore } = require('./src/credential-store');
 const { FeishuManager } = require('./src/feishu-bridge');
 const dataRoot = require('./src/data-root');
@@ -17,6 +18,7 @@ module.exports = {
   resolvePiCommand,
   childEnv,
   ChatSessionManager,
+  SessionCatalog,
   CredentialStore,
   FeishuManager,
   ...dataRoot,

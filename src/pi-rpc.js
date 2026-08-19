@@ -65,13 +65,15 @@ class PiRpcClient extends EventEmitter {
    * @param {object} opts
    * @param {string[]} [opts.args] 追加到 `--mode rpc` 之后的参数
    * @param {string} [opts.cwd] 子进程工作目录（技能发现、配置读取都依赖它）
+   * @param {object} [opts.env] 追加/覆盖给子进程的环境变量
    * @param {string} [opts.name] 会话显示名
    */
   constructor(opts = {}) {
     super();
     this.args = opts.args || [];
     this.cwd = opts.cwd || process.cwd();
-    this.name = opts.name || 'pi-rpc';
+    this.env = opts.env || {};
+    this.name = opts.name === undefined ? 'pi-rpc' : opts.name;
     this.proc = null;
     this._buffer = '';
     this._decoder = new StringDecoder('utf8');
@@ -104,7 +106,7 @@ class PiRpcClient extends EventEmitter {
 
     this.proc = spawn(resolved.node, args, {
       cwd: this.cwd,
-      env: childEnv(),
+      env: { ...childEnv(), ...this.env },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });

@@ -3,6 +3,9 @@
 打包好的项目级 pi。不认识"蹊涯""股票池""帖子"这些具体项目的词——指向任意项目
 目录就能用，可以独立运行，也可以被别的内容层（写作、分析、其它可视化场景）依赖。
 
+> 未来维护或让 agent 修改前，建议先读 [`CORE_GUIDE.md`](./CORE_GUIDE.md)：它说明
+> core 的职责边界、哪些应留在应用层、哪些才值得沉淀进 core，以及如何基于 core 构建应用。
+
 ## 独立运行
 
 ```bash
@@ -13,7 +16,9 @@ npm start -- --cwd <项目目录>   # 不带 --cwd 时默认当前目录
 弹出一个两个 tab 的窗口：**自由讨论**（常驻 pi 会话，可调用 `<项目目录>/.pi/skills`
 下的项目技能）+ **设置**（切模型、配置 API Key）。会话和模型偏好落盘在
 `<项目目录>/.pi-electron-core/`，按项目区分，不影响 pi 自身的全局/项目配置，也不影响
-别的项目用这个 app 时的状态。
+别的项目用这个 app 时的状态。聊天侧栏可浏览并继续历史会话；Pi 原生 `sessions/*.jsonl`
+作为事实源，`sessions-index.json` 是可自动重建的摘要索引。若项目目录已移动，恢复时会
+创建指向原文件的兼容副本并更新副本中的 cwd，原始 JSONL 保持不变。
 
 ## 首次使用：安装 Pi
 
@@ -34,7 +39,8 @@ npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 | 导出 | 作用 |
 |---|---|
 | `PiRpcClient` | spawn 一个 `pi --mode rpc` 子进程，JSONL 通信、请求/响应关联、生命周期管理 |
-| `ChatSessionManager` | 常驻会话封装（`--session-dir --continue`），双 sink：Electron 渲染进程 + 自身 EventEmitter |
+| `ChatSessionManager` | 常驻会话封装（`--session-dir` + 安全恢复最近会话），支持历史枚举与 `switch_session`，双 sink：Electron 渲染进程 + 自身 EventEmitter |
+| `SessionCatalog` | 只读扫描 Pi 原生会话 JSONL，生成可重建的 `sessions-index.json` 摘要索引 |
 | `CredentialStore` | 通用业务凭证库：应用注册 schema（字段/动作/落盘钩子），统一存取与状态回显（渲染层不见明文）；值存 `<数据根>/.pi-electron-core/credentials.json` |
 | `FeishuManager` | 飞书 / Lark 桥接管理（凭证配置、扫码建应用、start/stop/restart/status/reset），不含任何具体业务逻辑 |
 | `appRoot`/`resolveDataRoot`/`setDataRoot`/`scriptsDir` | 数据根解析（打包便携 = exe 旁 data/，开发 = devRoot，可经 config/data-root.json 配置） |
@@ -54,7 +60,7 @@ CLI 自检：`node scripts/check-pi.js [prompt] [--cwd <path>]`。
 |---|---|
 | `electron/main-app.js` | `registerCoreIpc()`（chat/settings/auth 的 `ipcMain.handle` 注册）+ `createChatSessionWithSettings()`（常驻会话创建 + 恢复模型偏好） |
 | `electron/preload-bridge.js` | `coreWorkbenchBridge(ipcRenderer)`，返回 chat/settings/auth 对应的 `window.workbench.*` 绑定，供各自的 preload.js 拼进自己的 `contextBridge.exposeInMainWorld` |
-| `electron/renderer/{app.js, styles.css, lib/markdown.js, pages/{chat.js, settings-page.js}}` | 通用渲染层：tab 路由、聊天气泡、完整设置页（模型/凭证/飞书/其他，业务凭证按 schema 注册渲染）。不含任何项目专属页面 |
+| `electron/renderer/{app.js, styles.css, lib/markdown.js, pages/{chat.js, settings-page.js}}` | 通用渲染层：tab 路由、聊天气泡、历史会话抽屉、发送/停止状态按钮、完整设置页（模型/凭证/飞书/其他，业务凭证按 schema 注册渲染）+ 通用主题组件（纯白浮岛 `.card`、胶囊 `.chip`、状态徽标 `.status-badge`、贴士框 `.notice-box`、步骤圆点 `.step-num`、表单 `.form-*`）。不含任何项目专属页面 |
 | `electron/main.js` / `electron/preload.js` / `electron/renderer/index.html` | 独立 app 的入口，组装以上两块 |
 
 ## API Key 管理
@@ -89,6 +95,34 @@ CLI 自检：`node scripts/check-pi.js [prompt] [--cwd <path>]`。
 不需要额外代码——`ChatSessionManager`/`PiRpcClient` spawn `pi` 子进程时把
 `projectRoot` 当作 `cwd`，pi 自己会自动发现该目录下的 `.pi/skills`。独立运行时
 `--cwd <项目目录>` 指哪个目录，聊天页就能调用哪个目录的技能。
+
+## 飞书 / Lark 内置扩展
+
+core 内置了一份 `pi-feishu-lark`：
+
+```text
+pi-electron-core/pi-packages/pi-feishu-lark/
+```
+
+`FeishuManager` 启动独立 RPC 控制进程时会使用 `--no-extensions -e <内置扩展路径>`，
+只加载这份 vendored 扩展，调用方项目不需要再在 `.pi/settings.json` 安装
+`npm:pi-feishu-lark`。飞书配置、状态、日志、锁文件默认仍按项目落盘：
+
+```text
+<projectRoot>/.pi/feishu/config.json
+<projectRoot>/.pi/feishu/state.json
+<projectRoot>/.pi/feishu/locks.json
+```
+
+因此多个项目可以共用同一个 `pi-electron-core`，但分别绑定不同飞书机器人。
+
+core 默认强制使用 WebSocket 卡片回调模式（`cardActionMode: "ws"`）。这样新项目不会尝试
+监听本地 `0.0.0.0:3001/webhook/card`，避免 Windows 上常见的 `listen EACCES` 导致
+后台 gateway 已启动但 `/feishu status` 仍显示未连接。通过设置页保存/启动时，旧配置也会被
+自动迁移到 `ws`。
+
+如果还希望在普通终端 Pi 会话中也能手动输入 `/feishu status`，调用方项目需要放一个
+项目级 shim：`.pi/extensions/feishu/index.ts`，再转发到 core 内置扩展。当前项目已这样配置。
 
 ## 不提供什么，以及为什么
 
@@ -126,8 +160,16 @@ registerCoreIpc({ ipcMain, chatSession, piSettingsPath });
 `electron/renderer/`）引用 core 提供的 `app.js` / `styles.css` / `pages/chat.js` /
 `pages/settings-page.js`（完整 4-tab 设置页），自己只维护项目专属页面
 （如仪表盘、股票池看板）的脚本和 `#page-*` markup，并在主进程注册业务凭证
-（`CredentialStore.registerSchema`）。具体实现参考蹊涯工作台的
+（`CredentialStore.registerSchema`）。应用专属设置卡（如某项目的「入库媒体
+策略」开关）经 `window.SettingsPage.registerExtraCards({ tabId, html, init,
+refresh })` 注册：core 负责挂载 DOM、幂等保护，并在每次进入设置页时调用
+`refresh`（init 在挂载时调用一次）。具体实现参考蹊涯工作台的
 `workbench/packages/xiya-content/src/main/index.js`。
+
+**主题与规范**：core 的 styles.css 即完整 checklist 设计审美——环境画布随页面流
+动、内容锚定纯白浮岛、用户气泡为中性微底胶囊、侧栏磨砂同频。设计规范（色板/
+透明度阶梯/动效/组件解剖）见仓库根目录 `checklist_design_system/CHECKLIST_DESIGN_SPEC.md`，
+core 不再内置独立设计文档。
 
 ## 已知边界
 

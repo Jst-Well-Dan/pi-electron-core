@@ -2,20 +2,25 @@
  * feishu-bridge.js — 飞书 / Lark 机器人 ↔ pi 会话桥接管理（通用版）。
  *
  * 能力：
- *  - 凭证保存在 ~/.pi/agent/feishu/config.json（按用户、不按项目），
+ *  - 凭证默认保存在 <projectRoot>/.pi/feishu/config.json（按项目隔离），
  *    环境变量 FEISHU_APP_ID / FEISHU_APP_SECRET 存在时视为「环境托管」。
- *  - 「扫码创建应用」走 @larksuiteoapi/node-sdk 的 registerApp（在
- *    <projectRoot>/.pi/npm/node_modules 中解析该 SDK，供 pi-feishu-lark 安装场景复用）。
+ *  - 内置加载 pi-electron-core/pi-packages/pi-feishu-lark 里的 Pi 扩展，
+ *    调用方项目不再需要单独安装 npm:pi-feishu-lark。
+ *  - 「扫码创建应用」走 @larksuiteoapi/node-sdk 的 registerApp（优先从 core
+ *    依赖解析，兼容从 <projectRoot>/.pi/npm/node_modules 解析）。
  *  - start / stop / restart / status / reset 命令通过一个独立的 pi RPC 子进程
- *    调用 pi-feishu-lark 扩展；该子进程与桌面聊天会话相互隔离。
+ *    调用内置 pi-feishu-lark 扩展；该子进程与桌面聊天会话相互隔离。
  *
  * 不包含任何具体项目的业务逻辑；调用方（独立 core app 或内容层）传入 projectRoot。
  */
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { PiRpcClient } = require('./pi-rpc');
+
+const CORE_ROOT = path.resolve(__dirname, '..');
+const FEISHU_PACKAGE_ROOT = path.join(CORE_ROOT, 'pi-packages', 'pi-feishu-lark');
+const FEISHU_EXTENSION_PATH = path.join(FEISHU_PACKAGE_ROOT, '.pi', 'extensions', 'feishu', 'index.ts');
 
 const DEFAULTS = {
   domain: 'feishu',
@@ -39,13 +44,14 @@ function mask(value) {
 }
 
 class FeishuManager extends EventEmitter {
-  constructor({ projectRoot, ClientClass = PiRpcClient, configPath, rootDir, registerApp } = {}) {
+  constructor({ projectRoot, ClientClass = PiRpcClient, configPath, rootDir, extensionPath, registerApp } = {}) {
     super();
-    this.projectRoot = projectRoot;
+    this.projectRoot = path.resolve(projectRoot || process.cwd());
     this.ClientClass = ClientClass;
     this.registerApp = registerApp || this.loadRegisterApp.bind(this);
-    this.rootDir = rootDir || path.join(os.homedir(), '.pi', 'agent', 'feishu');
+    this.rootDir = rootDir || path.join(this.projectRoot, '.pi', 'feishu');
     this.configPath = configPath || path.join(this.rootDir, 'config.json');
+    this.extensionPath = extensionPath || FEISHU_EXTENSION_PATH;
     this.client = null;
     this.busy = false;
     this.currentCommand = null;
@@ -65,10 +71,13 @@ class FeishuManager extends EventEmitter {
       groupPolicy: configured ? config.groupPolicy || DEFAULTS.groupPolicy : DEFAULTS.groupPolicy,
       cardActionMode: configured
         ? envConfigured
-          ? process.env.FEISHU_CARD_ACTION_MODE || 'webhook'
-          : config.cardActionMode || 'webhook'
+          ? process.env.FEISHU_CARD_ACTION_MODE || DEFAULTS.cardActionMode
+          : config.cardActionMode || DEFAULTS.cardActionMode
         : DEFAULTS.cardActionMode,
       autoStart: configured ? config.autoStart !== false : DEFAULTS.autoStart,
+      rootDir: this.rootDir,
+      configPath: this.configPath,
+      extensionPath: this.extensionPath,
       busy: this.busy,
     };
   }
@@ -136,7 +145,11 @@ class FeishuManager extends EventEmitter {
 
   loadRegisterApp(options) {
     const modulePath = require.resolve('@larksuiteoapi/node-sdk', {
-      paths: [path.join(this.projectRoot, '.pi', 'npm', 'node_modules')],
+      paths: [
+        path.join(FEISHU_PACKAGE_ROOT, 'node_modules'),
+        path.join(CORE_ROOT, 'node_modules'),
+        path.join(this.projectRoot, '.pi', 'npm', 'node_modules'),
+      ],
     });
     return require(modulePath).registerApp(options);
   }
@@ -154,7 +167,10 @@ class FeishuManager extends EventEmitter {
     this.emit('event', { type: 'command-start', command: name, status: this.getStatus() });
     try {
       await client.send({ type: 'prompt', message: `/feishu ${name}` }, 15_000);
-      const settled = await client.waitForSettled(30_000);
+      // `/feishu ...` is handled entirely by the extension command and usually
+      // does not emit agent_settled. Wait briefly so UI notifications can flush,
+      // but do not block the Electron settings page for a full model turn timeout.
+      const settled = await client.waitForSettled(name === 'status' ? 1_500 : 5_000);
       this.emit('event', { type: 'command-end', command: name, settled, status: this.getStatus() });
       return { ok: true, settled, status: this.getStatus() };
     } finally {
@@ -166,10 +182,12 @@ class FeishuManager extends EventEmitter {
   async ensureClient() {
     if (this.client?.running) return this.client;
     this.hardenTransport();
+    this.assertBundledExtension();
     const client = new this.ClientClass({
       cwd: this.projectRoot,
       name: 'feishu-control',
-      args: ['--approve', '--no-session'],
+      args: ['--approve', '--no-session', '--no-extensions', '-e', this.extensionPath],
+      env: { PI_FEISHU_ROOT: this.rootDir },
     });
     client.on('extension_ui_request', (request) => this.handleUiRequest(request));
     client.on('error', (error) => this.emit('event', { type: 'error', message: error.message }));
@@ -183,7 +201,7 @@ class FeishuManager extends EventEmitter {
         await client.send({ type: 'get_state' }, 10_000);
         const { commands = [] } = await client.send({ type: 'get_commands' }, 10_000);
         if (!commands.some((item) => item.name === 'feishu')) {
-          throw new Error('未加载 pi-feishu-lark。请先在项目根目录运行 pi install -l npm:pi-feishu-lark@0.2.4。');
+          throw new Error(`未加载内置 pi-feishu-lark 扩展：${this.extensionPath}`);
         }
         return client;
       } catch (error) {
@@ -194,6 +212,12 @@ class FeishuManager extends EventEmitter {
     client.kill();
     this.client = null;
     throw lastError || new Error('飞书控制进程启动失败。');
+  }
+
+  assertBundledExtension() {
+    if (!fs.existsSync(this.extensionPath)) {
+      throw new Error(`未找到内置 pi-feishu-lark 扩展：${this.extensionPath}`);
+    }
   }
 
   hardenTransport() {

@@ -8,6 +8,8 @@
  * 飞书 / Lark（feishu:*）、数据目录（dataRoot:*）。这些 handler 都依赖调用方
  * 注入的服务实例（services），core 本身不内置任何具体业务的凭证/字段。
  */
+const { shell } = require('electron');
+
 const {
   ChatSessionManager,
   readSettings,
@@ -46,14 +48,22 @@ function createChatSessionWithSettings({ projectRoot, sessionDir, piSettingsPath
 
 function registerCoreIpc({ ipcMain, chatSession, piSettingsPath, emitToRenderer = () => {}, piInstaller = new PiInstaller(), oauthLoginManager = new OAuthLoginManager() }) {
   oauthLoginManager.on('event', (event) => emitToRenderer('auth:oauthEvent', event));
+
+  // ---- 系统能力：由 preload 暴露给渲染层，用于 OAuth / 飞书扫码授权等外部网页 ----
+  ipcMain.handle('shell:openExternal', async (_e, url) => {
+    const value = String(url || '').trim();
+    if (!/^https?:\/\//i.test(value)) throw new Error('只允许打开 http/https 链接。');
+    await shell.openExternal(value);
+    return { ok: true };
+  });
   // ---- 自由讨论 ----
   ipcMain.handle('chat:send', async (_e, text) => {
     await chatSession.send(text);
     return { ok: true };
   });
   ipcMain.handle('chat:new', async () => {
-    await chatSession.newSession();
-    return { ok: true };
+    const result = await chatSession.newSession();
+    return { ok: !(result && result.cancelled), ...(result || {}) };
   });
   ipcMain.handle('chat:abort', async () => {
     await chatSession.abort();
@@ -61,6 +71,9 @@ function registerCoreIpc({ ipcMain, chatSession, piSettingsPath, emitToRenderer 
   });
   ipcMain.handle('chat:restart', () => chatSession.restart());
   ipcMain.handle('chat:getHistory', () => chatSession.getHistory());
+  ipcMain.handle('chat:getState', () => chatSession.getState());
+  ipcMain.handle('chat:listSessions', () => chatSession.listSessions());
+  ipcMain.handle('chat:switchSession', (_e, sessionId) => chatSession.switchSession(sessionId));
 
   // ---- Pi 运行环境：状态检测与经用户确认后的安装 ----
   ipcMain.handle('pi:runtimeStatus', () => piInstaller.getStatus());
@@ -127,16 +140,22 @@ function registerCoreSettingsIpc({ ipcMain, emitToRenderer = () => {}, services 
       await credentialStore.clear(id);
       return credentialStore.statusOf(id);
     });
-    ipcMain.handle('credential:action', async (_e, { id, actionId }) => {
-      await credentialStore.runAction(id, actionId);
-      return credentialStore.statusOf(id);
-    });
+    ipcMain.handle('credential:action', async (_e, { id, actionId, value }) => (
+      credentialStore.runAction(id, actionId, value)
+    ));
   }
 
   if (feishuManager) {
     feishuManager.on('event', (event) => emitToRenderer('feishu:event', event));
     ipcMain.handle('feishu:status', () => feishuManager.getStatus());
-    ipcMain.handle('feishu:setupByQr', (_e, input) => feishuManager.setupByQr(input));
+    ipcMain.handle('feishu:setupByQr', async (_e, input) => {
+      const setupStatus = await feishuManager.setupByQr(input);
+      // QR setup only writes the new app credentials. Restart immediately in the
+      // main process so the background gateway cannot keep serving an old app or
+      // remain stopped while the renderer thinks setup is complete.
+      const restart = await feishuManager.command('restart');
+      return { ok: true, setupStatus, restart, status: restart.status || setupStatus };
+    });
     ipcMain.handle('feishu:saveConfig', (_e, input) => feishuManager.saveConfig(input));
     ipcMain.handle('feishu:command', (_e, command) => feishuManager.command(command));
   }

@@ -70,6 +70,11 @@
             </div>
             <div class="agent-header-actions">
               <span class="agent-session-badge" id="chat-session-tag">会话</span>
+              <button class="icon-btn-sm" id="btn-chat-history" type="button" title="历史会话" aria-label="历史会话" aria-expanded="false" aria-controls="chat-history-panel">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path>
+                </svg>
+              </button>
               <button class="icon-btn-sm" id="btn-chat-new" type="button" title="新对话">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -89,8 +94,11 @@
                   <span class="hint-key">Enter</span> 发送 · <span class="hint-key">Shift+Enter</span> 换行
                 </div>
                 <div class="input-actions">
-                  <button class="btn btn-ghost btn-sm" id="btn-chat-abort" type="button" title="中止当前回复">中止</button>
-                  <button class="btn btn-primary btn-sm" id="btn-chat-send" type="button">发送</button>
+                  <button class="agent-send-button" id="btn-chat-send" type="button" title="发送" aria-label="发送" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 19V5M5 12l7-7 7 7"></path>
+                    </svg>
+                  </button>
                 </div>
               </div>
             </div>

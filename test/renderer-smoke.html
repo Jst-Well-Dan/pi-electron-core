@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="../electron/renderer/styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside class="agent-sidebar" id="agent-sidebar">
+      <div class="agent-sidebar-header">
+        <div class="agent-title-wrap"><span class="agent-eyebrow">AGENT</span><div class="agent-name-row"><span class="agent-dot-indicator" id="agent-dot"></span><span class="agent-name">Agent</span></div></div>
+        <div class="agent-header-actions">
+          <span class="agent-session-badge" id="chat-session-tag">会话</span>
+          <button class="icon-btn-sm" id="btn-chat-new" type="button" title="新对话"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg></button>
+        </div>
+      </div>
+      <div class="agent-messages-container" id="chat-messages"></div>
+      <div class="agent-input-container">
+        <div class="agent-input-card">
+          <textarea class="agent-textarea" id="chat-input" rows="2"></textarea>
+          <div class="agent-input-toolbar"><div class="input-tool-hints">Enter 发送</div><div class="input-actions"><button id="btn-chat-abort">中止</button><button id="btn-chat-send">发送</button></div></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+  <script src="../electron/renderer/lib/markdown.js"></script>
+  <script src="../electron/renderer/app.js"></script>
+  <script src="../electron/renderer/pages/chat.js"></script>
+</body>
+</html>

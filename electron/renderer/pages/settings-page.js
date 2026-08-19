@@ -5,8 +5,10 @@
  * 重复维护）。模型、凭证、飞书三个 tab 由 core 提供；「其他」tab 为通用
  * 凭证注册制：内容层在主进程通过 CredentialStore.registerSchema 注册自己的
  * 凭证项（如某数据 API 的 Token、某平台 Cookie），本页按 schema 渲染卡片。
+ * 内容层还可通过 SettingsPage.registerExtraCards 向任意 tab 追加应用专属
+ * 设置卡（core 只负责挂载与生命周期，不含业务）。
  *
- * 兼容接口：window.SettingsPage = { init, onShow, activateTab }；
+ * 兼容接口：window.SettingsPage = { init, onShow, activateTab, registerExtraCards }；
  * 同时注册 window.App 的 'settings' 页生命周期。
  */
 (function () {
@@ -29,6 +31,17 @@
     if (!tag) return;
     tag.textContent = text;
     tag.className = ok ? 'tag ok' : 'tag mute';
+  }
+
+  async function openExternalUrl(url, statusNodeId) {
+    try {
+      if (typeof window.workbench.openExternal !== 'function') throw new Error('openExternal bridge missing');
+      await window.workbench.openExternal(url);
+    } catch (error) {
+      const message = `⚠ 无法自动打开浏览器，请复制链接手动打开：${url}`;
+      if (statusNodeId) setStatus(statusNodeId, message, 'error');
+      else console.error(message, error);
+    }
   }
 
   function activateTab(name) {
@@ -451,10 +464,10 @@
     if (!event || event.providerId !== $('#oauth-provider').value) return;
     if (event.type === 'auth-url') {
       setStatus('#oauth-status', event.instructions || '授权页面已在默认浏览器中打开；完成授权后返回此窗口。', 'running');
-      window.workbench.openExternal(event.url);
+      openExternalUrl(event.url, '#oauth-status');
     } else if (event.type === 'device-code') {
       setStatus('#oauth-status', `请在浏览器完成验证，设备码：${event.userCode}`, 'running');
-      window.workbench.openExternal(event.verificationUri);
+      openExternalUrl(event.verificationUri, '#oauth-status');
     } else if (event.type === 'input' || event.type === 'select') showOAuthPrompt(event);
     else if (event.type === 'progress') setStatus('#oauth-status', event.message || '正在登录…', 'running');
     else if (event.type === 'success') {
@@ -538,11 +551,12 @@
     setFeishuBusy(true);
     setFeishuStatus('正在准备飞书授权页面…', 'running');
     try {
-      await window.workbench.feishuSetupByQr({
+      const result = await window.workbench.feishuSetupByQr({
         groupPolicy: $('#feishu-group-policy').value,
         autoStart: $('#feishu-auto-start').checked,
       });
-      await runFeishuCommand('restart');
+      if (result?.status) renderFeishu(result.status);
+      setFeishuStatus('飞书配置已创建，并已提交后台连接重启。', 'done');
     } catch (error) {
       setFeishuStatus(`⚠ ${error.message}`, 'error');
       setFeishuBusy(false);
@@ -579,29 +593,29 @@
     if (event.type === 'notice') setFeishuStatus(event.message, event.level === 'error' ? 'error' : event.level === 'warning' ? 'running' : 'done');
     if (event.type === 'qr-url') {
       setFeishuStatus('飞书授权页面已在浏览器中打开；完成扫码后请返回此窗口。', 'running');
-      window.workbench.openExternal(event.url);
+      openExternalUrl(event.url, '#feishu-status');
     }
     if (event.type === 'status' && event.message) setFeishuStatus(event.message, 'done');
     if (event.type === 'error') setFeishuStatus(`⚠ ${event.message}`, 'error');
   }
 
-  /* ============================== 其他 tab（数据目录 + 凭证 + 媒体策略） ============================== */
+  /* ============================== 其他 tab（数据目录 + 注册凭证） ============================== */
 
   // 每个注册凭证卡片的状态缓存：{ status, busy, busyActionId }
   const credentialUi = new Map();
 
   function defaultTagText(status) {
     if (!status.configured) return '未配置';
-    if (status.source === 'environment') return '环境托管';
+    if (status.source === 'environment') return status.managed ? '环境变量' : '环境托管';
     return '已配置';
   }
 
   function defaultDetailText(status) {
-    if (!status.configured) {
-      return status.source === 'environment' ? '环境变量未提供可用值。' : '未配置。请填写后保存。';
-    }
+    if (!status.configured) return '未配置。请填写后保存。';
     if (status.source === 'environment') {
-      return `当前由环境变量 ${status.envName || ''} 提供，应用内不可修改。`;
+      return status.managed
+        ? `当前使用环境变量 ${status.envName || ''}；在此保存后将优先使用页面配置。`
+        : `当前由环境变量 ${status.envName || ''} 提供，应用内不可修改。`;
     }
     return `已保存到应用凭证库（${new Date(status.updatedAt || Date.now()).toLocaleString()}）。输入新值并保存可覆盖。`;
   }
@@ -648,7 +662,23 @@
       input.spellcheck = false;
       input.placeholder = status.placeholder || '';
       input.addEventListener('keydown', (event) => { if (event.key === 'Enter') saveCredential(status.id); });
-      field.appendChild(input);
+      if (status.revealable) {
+        const secretWrap = el('div', 'credential-secret-input');
+        const revealBtn = el('button', 'credential-reveal-btn', '显示');
+        revealBtn.type = 'button';
+        revealBtn.setAttribute('aria-label', `显示${status.label}`);
+        revealBtn.addEventListener('click', () => {
+          const showing = input.type === 'text';
+          input.type = showing ? 'password' : 'text';
+          revealBtn.textContent = showing ? '显示' : '隐藏';
+          revealBtn.setAttribute('aria-label', `${showing ? '显示' : '隐藏'}${status.label}`);
+          input.focus();
+        });
+        secretWrap.append(input, revealBtn);
+        field.appendChild(secretWrap);
+      } else {
+        field.appendChild(input);
+      }
     }
     const actions = card.querySelector('.task-actions');
     const saveBtn = el('button', 'btn btn-primary btn-sm', '保存');
@@ -656,7 +686,7 @@
     saveBtn.id = status.saveId || `btn-${status.id}-save`;
     saveBtn.addEventListener('click', () => saveCredential(status.id));
     actions.appendChild(saveBtn);
-    const clearBtn = el('button', 'btn btn-danger-ghost btn-sm', '清除');
+    const clearBtn = el('button', 'btn btn-secondary btn-sm', '清除');
     clearBtn.type = 'button';
     clearBtn.id = status.clearId || `btn-${status.id}-clear`;
     clearBtn.addEventListener('click', () => clearCredential(status.id));
@@ -673,7 +703,9 @@
   }
 
   function renderCredentialCard(status) {
-    credentialUi.set(status.id, { status });
+    const ui = credentialUi.get(status.id) || {};
+    ui.status = status;
+    credentialUi.set(status.id, ui);
     const card = $(`#${status.cardId || `settings-${status.id}-card`}`);
     if (!card) return;
     const tag = card.querySelector('.task-head .tag');
@@ -681,9 +713,15 @@
     tag.className = status.configured ? 'tag ok' : 'tag mute';
     setStatus(`#${status.statusId || `${status.id}-status`}`, credentialDetail(status));
     const input = $(`#${status.inputId || `${status.id}-input`}`);
-    if (input && status.source === 'environment') {
-      input.disabled = true;
-      input.placeholder = '当前由环境变量管理';
+    if (input) {
+      const environmentLocked = status.source === 'environment' && !status.managed;
+      input.disabled = environmentLocked;
+      input.placeholder = environmentLocked ? '当前由环境变量管理' : (status.placeholder || '');
+      const revealBtn = input.parentElement?.querySelector('.credential-reveal-btn');
+      if (revealBtn) revealBtn.disabled = environmentLocked;
+    }
+    if (ui.busy) {
+      card.querySelectorAll('button, input, textarea, select').forEach((node) => { node.disabled = true; });
     }
   }
 
@@ -713,7 +751,15 @@
     setStatus(`#${ui.status.statusId || `${id}-status`}`, '保存中…', 'running');
     try {
       const status = await window.workbench.credentialSet(id, value);
-      if (input) input.value = '';
+      if (input) {
+        input.value = '';
+        input.type = 'password';
+        const revealBtn = input.parentElement?.querySelector('.credential-reveal-btn');
+        if (revealBtn) {
+          revealBtn.textContent = '显示';
+          revealBtn.setAttribute('aria-label', `显示${status.label}`);
+        }
+      }
       renderCredentialCard(status);
       setStatus(`#${status.statusId || `${id}-status`}`, (status.extra && status.extra.detail) || '已保存。', 'done');
     } catch (error) {
@@ -728,32 +774,63 @@
     try {
       const status = await window.workbench.credentialClear(id);
       renderCredentialCard(status);
-      setStatus(`#${status.statusId || `${id}-status`}`, '已清除。', 'done');
+      const message = status.source === 'environment'
+        ? `页面配置已清除，已回退到环境变量 ${status.envName || ''}。`
+        : '已清除。';
+      setStatus(`#${status.statusId || `${id}-status`}`, message, 'done');
     } catch (error) {
       setStatus(`#${ui.status.statusId || `${id}-status`}`, `⚠ 清除失败：${error.message}`, 'error');
     }
   }
 
+  function setCredentialBusy(ui, busy) {
+    const card = $(`#${ui.status.cardId || `settings-${ui.status.id}-card`}`);
+    if (!card) return;
+    if (busy) {
+      ui.disabledControls = Array.from(card.querySelectorAll('button, input, textarea, select'))
+        .map((node) => ({ node, disabled: node.disabled }));
+      ui.disabledControls.forEach(({ node }) => { node.disabled = true; });
+      return;
+    }
+    for (const { node, disabled } of ui.disabledControls || []) node.disabled = disabled;
+    ui.disabledControls = null;
+  }
+
   async function runCredentialAction(id, actionId) {
     const ui = credentialUi.get(id);
-    if (!ui) return;
+    if (!ui || ui.busy) return;
     ui.busy = true;
+    setCredentialBusy(ui, true);
     ui.busyActionId = actionId;
     const statusNode = $(`#${ui.status.statusId || `${id}-status`}`);
+    const action = (ui.status.actions || []).find((item) => item.id === actionId);
+    const input = $(`#${ui.status.inputId || `${id}-input`}`);
+    const value = action?.useInput ? (input?.value.trim() || undefined) : undefined;
     if (statusNode) {
       statusNode.textContent = '正在执行…';
       statusNode.className = 'task-status running';
     }
     try {
-      await window.workbench.credentialAction(id, actionId);
+      const status = await window.workbench.credentialAction(id, actionId, value);
+      ui.busy = !!status.actionResult?.pending;
+      ui.status = status;
+      if (!ui.busy) {
+        setCredentialBusy(ui, false);
+        if (statusNode) {
+          const ok = status.actionResult?.ok !== false;
+          statusNode.textContent = status.actionResult?.message || '操作完成。';
+          statusNode.className = `task-status ${ok ? 'done' : 'error'}`;
+        }
+      }
     } catch (error) {
       ui.busy = false;
+      setCredentialBusy(ui, false);
       if (statusNode) {
         statusNode.textContent = `⚠ ${error.message}`;
         statusNode.className = 'task-status error';
       }
     }
-    // 终态（成功/取消/超时/失败）由 credential:event 更新；这里不重置 busy
+    // 返回 pending=true 的长任务由 credential:event 更新终态。
   }
 
   function handleCredentialEvent(event) {
@@ -762,7 +839,10 @@
     if (!ui) return;
     const statusNode = $(`#${ui.status.statusId || `${event.id}-status`}`);
     const terminal = ['success', 'cancelled', 'timeout', 'error'];
-    if (terminal.includes(event.type)) ui.busy = false;
+    if (terminal.includes(event.type)) {
+      ui.busy = false;
+      setCredentialBusy(ui, false);
+    }
     if (statusNode) {
       statusNode.textContent = event.message || (event.type === 'success' ? '完成。' : '');
       statusNode.className = `task-status ${event.type === 'error' ? 'error' : terminal.includes(event.type) ? 'done' : 'running'}`;
@@ -846,7 +926,7 @@
             <div class="settings-section-head"><div><h3 id="settings-credentials-title">连接模型</h3><p>凭证保存到 Pi 自己的认证库，终端与工作台共用；不会回显密钥。</p></div><div class="task-actions"><button class="btn btn-secondary btn-sm" id="btn-auth-refresh" type="button">刷新状态</button><button class="btn btn-secondary btn-sm" id="btn-agent-restart" type="button">重启 Agent</button></div></div>
             <div class="settings-config-grid">
               <div class="card task-card auth-card"><div class="task-head"><h3>订阅登录</h3><span class="tag mute" id="oauth-status-tag">读取中…</span></div><p class="task-desc">使用 Pi 官方 OAuth 流程；授权链接会在默认浏览器中打开。</p><label class="settings-field">服务<select class="select" id="oauth-provider"></select></label><div class="task-actions"><button class="btn btn-primary btn-sm" id="btn-oauth-start" type="button">登录</button><button class="btn btn-secondary btn-sm" id="btn-oauth-cancel" type="button" disabled>取消</button></div><div class="oauth-prompt" id="oauth-prompt" hidden><label class="settings-field" id="oauth-input-label">验证信息<input class="select" id="oauth-input" autocomplete="off"></label><div class="task-actions" id="oauth-options"></div><button class="btn btn-primary btn-sm" id="btn-oauth-submit" type="button">继续</button></div><div class="task-status" id="oauth-status" aria-live="polite">正在读取可登录服务…</div></div>
-              <div class="card task-card auth-card"><div class="task-head"><h3>API Key</h3><span class="tag mute" id="auth-key-tag">未检查</span></div><p class="task-desc">用于 API 计费 Provider。Provider 列表来自 Pi 运行时（与 TUI 一致），保存后可刷新模型列表并选择模型。</p><label class="settings-field">Provider<select class="select" id="auth-provider-id"></select></label><label class="settings-field">API Key<input class="select" id="auth-key-input" type="password" autocomplete="new-password" placeholder="仅提交给 Pi 认证库"></label><div class="task-actions"><button class="btn btn-primary btn-sm" id="btn-auth-key-save" type="button">保存 Key</button><button class="btn btn-danger-ghost btn-sm" id="btn-auth-key-clear" type="button">清除凭证</button></div><div class="task-status" id="auth-key-status" aria-live="polite">正在读取 Provider 列表…</div></div>
+              <div class="card task-card auth-card"><div class="task-head"><h3>API Key</h3><span class="tag mute" id="auth-key-tag">未检查</span></div><p class="task-desc">用于 API 计费 Provider。Provider 列表来自 Pi 运行时（与 TUI 一致），保存后可刷新模型列表并选择模型。</p><label class="settings-field">Provider<select class="select" id="auth-provider-id"></select></label><label class="settings-field">API Key<input class="select" id="auth-key-input" type="password" autocomplete="new-password" placeholder="仅提交给 Pi 认证库"></label><div class="task-actions"><button class="btn btn-primary btn-sm" id="btn-auth-key-save" type="button">保存 Key</button><button class="btn btn-secondary btn-sm" id="btn-auth-key-clear" type="button">清除凭证</button></div><div class="task-status" id="auth-key-status" aria-live="polite">正在读取 Provider 列表…</div></div>
             </div>
           </section>
         </section>
@@ -858,7 +938,6 @@
         <section class="settings-tab-panel" id="settings-panel-datasource" role="tabpanel" aria-labelledby="settings-tab-datasource" data-settings-panel="datasource" hidden>
           <div class="task-grid settings-datasource-grid" id="datasource-grid">
             <div class="card task-card" id="settings-data-root-card"><div class="task-head"><h3>数据目录</h3><span class="tag mute" id="data-root-tag">检查中…</span></div><p class="task-desc">所有业务数据（帖子、股票池、凭证、会话、看板数据）收拢于此，换机/备份只需拷贝整个目录。修改后重启应用生效。</p><label class="settings-field">当前数据根<input class="select" id="data-root-input" readonly spellcheck="false" placeholder="读取中…"></label><div class="task-actions"><button class="btn btn-secondary btn-sm" id="btn-data-root-browse" type="button">选择目录</button><button class="btn btn-primary btn-sm" id="btn-data-root-save" type="button">保存</button></div><div class="task-status" id="data-root-status" aria-live="polite">正在读取…</div></div>
-            <div class="card task-card" id="settings-capture-media-card"><div class="task-head"><h3>URL 入库媒体策略</h3><span class="tag mute" id="capture-media-tag">读取中…</span></div><p class="task-desc">抓取 URL 入库时，图片与封面始终保存；视频/音频文件（mp4 等）按此开关决定是否落盘。修改后对下次抓取生效，不影响已入库内容。</p><label class="feishu-autostart"><input id="capture-media-save-video" type="checkbox"> 保存视频/音频文件</label><div class="task-actions"><button class="btn btn-primary btn-sm" id="btn-capture-media-save" type="button">保存</button></div><div class="task-status" id="capture-media-status" aria-live="polite">正在读取…</div></div>
           </div>
           <div class="task-status" id="datasource-status" hidden></div>
         </section>
@@ -897,68 +976,13 @@
     });
     window.workbench.onFeishuEvent(handleFeishuEvent);
 
-    // 其他 tab（数据目录 + 注册凭证 + URL 入库媒体策略）
+    // 其他 tab（数据目录 + 注册凭证；应用专属设置卡经 registerExtraCards 挂载）
     $('#btn-data-root-browse').addEventListener('click', browseDataRoot);
     $('#btn-data-root-save').addEventListener('click', saveDataRoot);
-    $('#btn-capture-media-save')?.addEventListener('click', saveCaptureMedia);
     window.workbench.onCredentialEvent(handleCredentialEvent);
-  }
 
-  /* ============================== URL 入库媒体策略（读写 .pi/skills/capture/config.json） ============================== */
-
-  async function refreshCaptureMedia() {
-    const checkbox = $('#capture-media-save-video');
-    const tag = $('#capture-media-tag');
-    const status = $('#capture-media-status');
-    if (!checkbox || !tag || !status) return;
-    if (!window.workbench.captureMediaGet) {
-      tag.textContent = '不可用';
-      tag.className = 'tag mute';
-      status.textContent = '当前应用未提供媒体策略设置。';
-      status.className = 'task-status';
-      checkbox.disabled = true;
-      $('#btn-capture-media-save').disabled = true;
-      return;
-    }
-    try {
-      const res = await window.workbench.captureMediaGet();
-      if (res && res.ok) {
-        checkbox.checked = !!res.saveVideoAudio;
-        tag.textContent = res.saveVideoAudio ? '保存视频/音频' : '仅图片/封面';
-        tag.className = res.saveVideoAudio ? 'tag ok' : 'tag mute';
-        status.textContent = res.saveVideoAudio
-          ? '当前：视频/音频会保存到 raw/ 的 captures/<id>/media/。'
-          : '当前：只保存图片/封面，视频/音频不落盘。';
-        status.className = 'task-status';
-      } else {
-        tag.textContent = '读取失败';
-        tag.className = 'tag mute';
-        status.textContent = `! ${(res && res.error) || '读取失败'}`;
-        status.className = 'task-status error';
-      }
-    } catch (error) {
-      tag.textContent = '读取失败';
-      tag.className = 'tag mute';
-      status.textContent = `! ${error.message}`;
-      status.className = 'task-status error';
-    }
-  }
-
-  async function saveCaptureMedia() {
-    const checkbox = $('#capture-media-save-video');
-    if (!checkbox) return;
-    setStatus('#capture-media-status', '保存中…');
-    try {
-      const res = await window.workbench.captureMediaSet({ saveVideoAudio: checkbox.checked });
-      if (res && res.ok) {
-        await refreshCaptureMedia();
-        setStatus('#capture-media-status', '✓ 已保存，下次抓取生效。', 'ok');
-      } else {
-        setStatus('#capture-media-status', `! ${(res && res.error) || '保存失败'}`, 'error');
-      }
-    } catch (error) {
-      setStatus('#capture-media-status', `! ${error.message}`, 'error');
-    }
+    // 挂载应用通过 registerExtraCards 注册的额外设置卡（幂等，可重复调用）
+    mountExtraCards();
   }
 
   async function refreshAllCredentials() {
@@ -973,7 +997,7 @@
     await refreshFeishu();
     await refreshDataRoot();
     await refreshCredentials();
-    await refreshCaptureMedia();
+    refreshExtraCards();
   }
 
   function init() {
@@ -984,7 +1008,48 @@
     onShow();
   }
 
-  window.SettingsPage = { init, onShow, activateTab };
+  /* ============================== 应用扩展卡片（registerExtraCards） ============================== */
+
+  // 内容层可通过 window.SettingsPage.registerExtraCards 向任意 tab 追加应用专属
+  // 设置卡（如某项目的自定义开关）。core 只负责：挂载 DOM、幂等保护、
+  // 生命周期调用（init 在挂载时、refresh 在每次进入设置页时）。不包含任何业务。
+  const extraCards = []; // { tabId, html, init?, refresh? }
+
+  function mountExtraCards() {
+    for (const card of extraCards) {
+      if (card.mounted) continue;
+      const panel = document.querySelector(`[data-settings-panel="${card.tabId}"]`);
+      if (!panel) {
+        console.warn(`[settings] registerExtraCards 的 tab 不存在: ${card.tabId}`);
+        continue;
+      }
+      const grid = panel.querySelector('.task-grid');
+      if (!grid) continue;
+      const template = document.createElement('template');
+      template.innerHTML = card.html.trim();
+      grid.appendChild(template.content);
+      card.mounted = true;
+      if (typeof card.init === 'function') {
+        try { card.init(grid); } catch (error) { console.error('[settings] 扩展卡片 init 失败:', error); }
+      }
+    }
+  }
+
+  function refreshExtraCards() {
+    for (const card of extraCards) {
+      if (!card.mounted || typeof card.refresh !== 'function') continue;
+      try { card.refresh(); } catch (error) { console.error('[settings] 扩展卡片 refresh 失败:', error); }
+    }
+  }
+
+  function registerExtraCards({ tabId, html, init, refresh }) {
+    if (!tabId || typeof html !== 'string') throw new Error('registerExtraCards 需要 { tabId, html }');
+    extraCards.push({ tabId, html, init, refresh });
+    // 若页面已渲染（脚本在 DOMContentLoaded 之后才加载），立即补挂载
+    mountExtraCards();
+  }
+
+  window.SettingsPage = { init, onShow, activateTab, registerExtraCards };
   window.App.registerPage('settings', { onShow });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });

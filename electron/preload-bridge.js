@@ -4,6 +4,9 @@
  */
 function coreWorkbenchBridge(ipcRenderer) {
   return {
+    /* 系统能力 */
+    openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+
     /* Pi 运行环境 */
     piRuntimeStatus: () => ipcRenderer.invoke('pi:runtimeStatus'),
     piInstall: () => ipcRenderer.invoke('pi:install'),
@@ -11,12 +14,16 @@ function coreWorkbenchBridge(ipcRenderer) {
 
     /* 自由讨论 */
     onChatHistory: (cb) => ipcRenderer.on('chat:history', (_e, h) => cb(h)),
+    onChatSessions: (cb) => ipcRenderer.on('chat:sessions', (_e, data) => cb(data)),
     onChatEvent: (cb) => ipcRenderer.on('chat:event', (_e, ev) => cb(ev)),
     chatSend: (text) => ipcRenderer.invoke('chat:send', text),
     chatNewSession: () => ipcRenderer.invoke('chat:new'),
     chatAbort: () => ipcRenderer.invoke('chat:abort'),
     chatRestart: () => ipcRenderer.invoke('chat:restart'),
     chatGetHistory: () => ipcRenderer.invoke('chat:getHistory'),
+    chatGetState: () => ipcRenderer.invoke('chat:getState'),
+    chatListSessions: () => ipcRenderer.invoke('chat:listSessions'),
+    chatSwitchSession: (sessionId) => ipcRenderer.invoke('chat:switchSession', sessionId),
 
     /* pi 设置：provider/model */
     settingsGet: () => ipcRenderer.invoke('settings:get'),
@@ -40,7 +47,7 @@ function coreWorkbenchBridge(ipcRenderer) {
     credentialStatus: () => ipcRenderer.invoke('credential:status'),
     credentialSet: (id, value) => ipcRenderer.invoke('credential:set', { id, value }),
     credentialClear: (id) => ipcRenderer.invoke('credential:clear', { id }),
-    credentialAction: (id, actionId) => ipcRenderer.invoke('credential:action', { id, actionId }),
+    credentialAction: (id, actionId, value) => ipcRenderer.invoke('credential:action', { id, actionId, value }),
     onCredentialEvent: (cb) => ipcRenderer.on('credential:event', (_e, event) => cb(event)),
 
     /* 飞书 / Lark 桥接管理（通用） */

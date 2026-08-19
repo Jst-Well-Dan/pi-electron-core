@@ -1,9 +1,9 @@
 /**
  * chat-session.js — 常驻 pi 会话（自由讨论 / 其它同进程消费者共用）
  *
- * 启动一个常驻 `pi --mode rpc --session-dir <dir> --continue` 子进程
- * （cwd = 项目根目录，.pi/skills/* 自动发现），关闭再打开会自动续接
- * 最近一次会话（--continue）。
+ * 启动一个常驻 `pi --mode rpc --session-dir <dir>` 子进程，并显式恢复目录中
+ * 最近的安全会话（cwd = 项目根目录，.pi/skills/* 自动发现）。项目移动后会
+ * 以非破坏性兼容副本恢复，不直接修改原始 JSONL。
  *
  * 与按钮任务的一次性子进程完全独立，互不共享会话。
  *
@@ -16,23 +16,28 @@
 const { EventEmitter } = require('node:events');
 const path = require('node:path');
 const { PiRpcClient } = require('./pi-rpc');
+const { SessionCatalog } = require('./session-catalog');
 
 class ChatSessionManager extends EventEmitter {
   /**
    * @param {object} opts
    * @param {string} opts.projectRoot
    * @param {string} opts.sessionDir 会话持久化目录
-   * @param {string} [opts.name] RPC 子进程显示名（默认 "pi agent 会话"）
+   * @param {string} [opts.name] 可选的 Pi 会话显示名
    * @param {(channel: string, payload: any) => void} [opts.emitToRenderer] 可选，缺省为 no-op
    */
   constructor(opts) {
     super();
     this.projectRoot = opts.projectRoot;
     this.sessionDir = opts.sessionDir;
-    this.name = opts.name || 'pi agent 会话';
+    this.name = opts.name || '';
     this.emitToRenderer = opts.emitToRenderer || (() => {});
     this.client = null;
     this._history = [];
+    this._starting = null;
+    this._activeSessionId = null;
+    this._operation = Promise.resolve();
+    this.catalog = new SessionCatalog({ sessionDir: this.sessionDir, projectRoot: this.projectRoot });
   }
 
   /** 双 sink：Electron 渲染进程 + 同进程内其它订阅者 */
@@ -46,25 +51,31 @@ class ChatSessionManager extends EventEmitter {
   }
 
   ensureStarted() {
+    if (this._starting) return this._starting;
     if (this.running) return Promise.resolve();
+    const resume = this.catalog.continueTarget();
+    const args = ['--session-dir', this.sessionDir];
+    if (resume) args.push('--session', resume.sessionPath);
     const client = new PiRpcClient({
-      args: ['--session-dir', this.sessionDir, '--continue'],
+      args,
       cwd: this.projectRoot,
       name: this.name,
     });
     this.client = client;
     this._forward(client);
     client.spawn();
-    return new Promise((resolve, reject) => {
+    this._starting = new Promise((resolve, reject) => {
       client.once('error', reject);
       // 等待子进程就绪：get_state 成功即认为可用
       const tryState = (attempt) => {
         if (!client.running) { reject(new Error('pi 子进程已退出')); return; }
         client.send({ type: 'get_state' }, 10000)
-          .then(async () => {
+          .then(async (state) => {
             client.removeListener('error', reject);
+            this._activeSessionId = state.sessionId || null;
             this._history = await this._loadHistory();
-            this._emit('chat:history', { messages: this._history });
+            this._emit('chat:history', { messages: this._history, sessionId: this._activeSessionId });
+            this._emitSessionList();
             resolve();
           })
           .catch(() => {
@@ -73,7 +84,24 @@ class ChatSessionManager extends EventEmitter {
           });
       };
       setTimeout(() => tryState(1), 1500);
+    }).finally(() => {
+      this._starting = null;
     });
+    return this._starting;
+  }
+
+  _emitSessionList() {
+    try {
+      this._emit('chat:sessions', { sessions: this.catalog.list(this._activeSessionId) });
+    } catch (error) {
+      this._emit('chat:event', { kind: 'error', text: `会话索引更新失败：${error.message}` });
+    }
+  }
+
+  _runExclusive(operation) {
+    const run = this._operation.then(operation, operation);
+    this._operation = run.catch(() => {});
+    return run;
   }
 
   async _loadHistory() {
@@ -87,6 +115,7 @@ class ChatSessionManager extends EventEmitter {
 
   _forward(client) {
     client.on('event', (ev) => {
+      if (client !== this.client) return;
       const t = ev.type;
       switch (t) {
         case 'message_update': {
@@ -137,6 +166,7 @@ class ChatSessionManager extends EventEmitter {
           break;
         case 'agent_settled':
           this._emit('chat:event', { kind: 'agent_settled' });
+          this._emitSessionList();
           break;
         case 'compaction_start':
           this._emit('chat:event', { kind: 'status', text: '上下文压缩中…' });
@@ -150,59 +180,119 @@ class ChatSessionManager extends EventEmitter {
     });
 
     client.on('error', (err) => {
+      if (client !== this.client) return;
       this._emit('chat:event', { kind: 'error', text: err.message });
     });
     client.on('exit', (info) => {
+      if (client !== this.client) return;
       this._emit('chat:event', { kind: 'error', text: `pi 会话进程退出 (code=${info.code})，请重启应用` });
     });
   }
 
   async send(text) {
     if (!text || !text.trim()) return;
-    await this.ensureStarted();
-    const res = await this.client.send({ type: 'prompt', message: text });
-    return res;
+    return this._runExclusive(async () => {
+      await this.ensureStarted();
+      return this.client.send({ type: 'prompt', message: text });
+    });
   }
 
   async newSession() {
-    await this.ensureStarted();
-    const res = await this.client.send({ type: 'new_session' }, 15000);
-    this._history = [];
-    this._emit('chat:history', { messages: [] });
-    return res;
+    return this._runExclusive(async () => {
+      await this.ensureStarted();
+      const state = await this.client.send({ type: 'get_state' }, 10000);
+      if (state.isStreaming) throw new Error('Agent 工作中，无法开启新对话');
+      const res = await this.client.send({ type: 'new_session' }, 15000);
+      if (res && res.cancelled) return res;
+      const nextState = await this.client.send({ type: 'get_state' }, 10000);
+      this._activeSessionId = nextState.sessionId || null;
+      this._history = [];
+      this._emit('chat:history', { messages: [], sessionId: this._activeSessionId });
+      this._emitSessionList();
+      return { ...(res || {}), sessionId: this._activeSessionId };
+    });
   }
 
-  async abort() {
+  async listSessions() {
+    await this.ensureStarted();
+    const state = await this.client.send({ type: 'get_state' }, 10000);
+    this._activeSessionId = state.sessionId || null;
+    return { sessions: this.catalog.list(this._activeSessionId) };
+  }
+
+  async switchSession(sessionId) {
+    return this._runExclusive(async () => {
+      await this.ensureStarted();
+      const state = await this.client.send({ type: 'get_state' }, 10000);
+      if (state.isStreaming) throw new Error('Agent 工作中，无法切换历史会话');
+      const target = this.catalog.switchTarget(sessionId);
+      if (!target) throw new Error('历史会话不存在或已被移除');
+      const res = await this.client.send({ type: 'switch_session', sessionPath: target.sessionPath }, 15000);
+      if (res && res.cancelled) return { cancelled: true };
+      const nextState = await this.client.send({ type: 'get_state' }, 10000);
+      this._activeSessionId = nextState.sessionId || target.id;
+      this._history = await this._loadHistory();
+      const history = { messages: this._history, sessionId: this._activeSessionId };
+      this._emit('chat:history', history);
+      this._emitSessionList();
+      return { cancelled: false, ...history };
+    });
+  }
+
+  async getState() {
+    await this.ensureStarted();
+    const state = await this.client.send({ type: 'get_state' }, 10000);
+    this._activeSessionId = state.sessionId || null;
+    return {
+      isStreaming: !!state.isStreaming,
+      sessionId: this._activeSessionId,
+      sessionName: state.sessionName || '',
+    };
+  }
+
+  async _abortUnlocked() {
     if (!this.client) return;
     try {
       await this.client.send({ type: 'abort' }, 5000);
     } catch { /* ignore */ }
   }
 
-  /** 保留 --continue 会话历史，但重启 Pi 进程以重新读取 auth.json / models.json。 */
+  async abort() {
+    return this._runExclusive(() => this._abortUnlocked());
+  }
+
+  /** 保留最近会话历史，但重启 Pi 进程以重新读取 auth.json / models.json。 */
   async restart() {
-    await this.abort();
-    this.dispose();
-    await this.ensureStarted();
-    return { ok: true };
+    return this._runExclusive(async () => {
+      await this._abortUnlocked();
+      this.dispose();
+      await this.ensureStarted();
+      return { ok: true };
+    });
   }
 
   /** 查询当前会话的最新消息（归一化后返回） */
   async getHistory() {
-    try {
-      if (this.client && this.client.running) {
-        const data = await this.client.send({ type: 'get_messages' }, 15000);
-        const msgs = normalizeMessages((data && data.messages) || []);
-        this._history = msgs;
-        return { messages: msgs };
-      }
-    } catch { /* fallthrough */ }
-    return { messages: this._history };
+    return this._runExclusive(async () => {
+      try {
+        await this.ensureStarted();
+        if (this.client && this.client.running) {
+          const data = await this.client.send({ type: 'get_messages' }, 15000);
+          const state = await this.client.send({ type: 'get_state' }, 10000);
+          const msgs = normalizeMessages((data && data.messages) || []);
+          this._history = msgs;
+          this._activeSessionId = state.sessionId || null;
+          return { messages: msgs, sessionId: this._activeSessionId };
+        }
+      } catch { /* fallthrough */ }
+      return { messages: this._history, sessionId: this._activeSessionId };
+    });
   }
 
   dispose() {
     if (this.client) this.client.kill();
     this.client = null;
+    this._starting = null;
   }
 }
 
@@ -229,26 +319,87 @@ function extractText(result) {
   return '';
 }
 
-/** 把 get_messages 的 AgentMessage 归一化成渲染层用的结构 */
+/** 把 get_messages 的 AgentMessage 归一化成渲染层用的结构。 */
 function normalizeMessages(messages) {
   const out = [];
-  for (const m of messages) {
-    const msg = m.message || m;
-    if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+  const toolCalls = new Map();
+
+  for (const wrapped of messages) {
+    const msg = wrapped.message || wrapped;
+    const ts = wrapped.timestamp || msg.timestamp || null;
     const content = msg.content;
     const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : content || [];
-    const item = {
-      role: msg.role,
-      ts: m.timestamp || msg.timestamp || null,
-      text: blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n'),
-      thinking: blocks.filter((b) => b.type === 'thinking').map((b) => b.thinking).join('\n'),
-      toolCalls: blocks
-        .filter((b) => b.type === 'toolCall')
-        .map((b) => ({ id: b.id, name: b.name, args: b.arguments })),
-    };
-    if (item.text || item.thinking || item.toolCalls.length) out.push(item);
+
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      const item = {
+        role: msg.role,
+        ts,
+        text: blocks.filter((block) => block.type === 'text').map((block) => block.text || '').join('\n'),
+        thinking: blocks.filter((block) => block.type === 'thinking').map((block) => block.thinking || '').join('\n'),
+        toolCalls: blocks
+          .filter((block) => block.type === 'toolCall')
+          .map((block) => ({
+            id: block.id,
+            name: block.name,
+            args: block.arguments || {},
+            output: '',
+            stateClass: msg.stopReason === 'aborted' ? 'error' : 'pending',
+            stateLabel: msg.stopReason === 'aborted' ? '已中止' : '未完成',
+          })),
+        meta: msg.role === 'assistant' ? {
+          provider: msg.provider || '',
+          model: msg.model || '',
+          usage: msg.usage || null,
+          stopReason: msg.stopReason || '',
+          errorMessage: msg.errorMessage || '',
+        } : null,
+      };
+      if (!item.text && item.meta && item.meta.errorMessage) item.text = item.meta.errorMessage;
+      for (const toolCall of item.toolCalls) toolCalls.set(toolCall.id, toolCall);
+      if (item.text || item.thinking || item.toolCalls.length) out.push(item);
+      continue;
+    }
+
+    if (msg.role === 'toolResult') {
+      const toolCall = toolCalls.get(msg.toolCallId);
+      if (toolCall) {
+        toolCall.output = extractText(msg);
+        toolCall.stateClass = msg.isError ? 'error' : 'done';
+        toolCall.stateLabel = msg.isError ? '失败' : '完成';
+      }
+      continue;
+    }
+
+    if (msg.role === 'bashExecution') {
+      out.push({
+        role: 'assistant',
+        ts,
+        text: '',
+        thinking: '',
+        toolCalls: [{
+          id: `bash-${ts || out.length}`,
+          name: 'bash',
+          args: { command: msg.command || '' },
+          output: msg.output || '',
+          stateClass: msg.cancelled || (msg.exitCode && msg.exitCode !== 0) ? 'error' : 'done',
+          stateLabel: msg.cancelled ? '已中止' : (msg.exitCode && msg.exitCode !== 0 ? '失败' : '完成'),
+        }],
+      });
+      continue;
+    }
+
+    if (msg.role === 'custom' && msg.display) {
+      const text = textOf(msg.content);
+      if (text) out.push({ role: 'assistant', ts, text, thinking: '', toolCalls: [], kind: 'custom' });
+      continue;
+    }
+
+    if (msg.role === 'compactionSummary' || msg.role === 'branchSummary') {
+      const summary = msg.summary || '';
+      if (summary) out.push({ role: 'assistant', ts, text: summary, thinking: '', toolCalls: [], kind: 'summary' });
+    }
   }
   return out;
 }
 
-module.exports = { ChatSessionManager };
+module.exports = { ChatSessionManager, normalizeMessages };

@@ -430,7 +430,7 @@ code, pre {
   flex-shrink: 0;
 }
 
-.icon-btn-sm:hover {
+.icon-btn-sm:hover:not(:disabled) {
   background: #FFFFFF;
   color: var(--color-dark);
   border-color: var(--alpha-25);
@@ -438,6 +438,7 @@ code, pre {
   transform: translateY(-1px);
 }
 
+.icon-btn-sm:disabled { cursor: default; opacity: 0.45; box-shadow: none; }
 .icon-btn-sm svg { width: 15px; height: 15px; }
 
 /* ============================================================
@@ -640,6 +641,79 @@ code, pre {
 .tag.ok::before { background: var(--color-status-ok); }
 
 /* ============================================================
+   通用组件（checklist 规范）：胶囊 / 状态徽标 / 步骤圆点 / 贴士框
+   语义来自文字 + 图标 + 动效，颜色只做莫兰迪稀释浸润（§3.3）
+   ============================================================ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: var(--alpha-06);
+  border: 1px solid var(--alpha-08);
+  color: var(--color-dark);
+  text-decoration: none;
+  transition: all var(--transition-fast);
+}
+.chip:hover {
+  background: var(--alpha-08);
+  border-color: var(--alpha-25);
+}
+
+.status-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: var(--radius-full);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.status-badge.spin::before {
+  content: '';
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: status-spin 0.9s linear infinite;
+}
+@keyframes status-spin { to { transform: rotate(360deg); } }
+
+/* 语义态（§3.3 无侵入式语义映射）：进行/排队用中性阶梯，完成用暗调森林绿
+   稀释底，已存在用中性提示，失败用 10% 稀释红 + 细文本 */
+.status-badge--running { background: var(--alpha-06); color: var(--color-dark); }
+.status-badge--queued { background: var(--alpha-04); color: var(--alpha-40); }
+.status-badge--done { background: rgba(3, 65, 22, 0.07); color: #14532D; }
+.status-badge--dup { background: var(--alpha-04); color: var(--alpha-70); border-color: var(--alpha-10); }
+.status-badge--fail { background: rgba(239, 68, 68, 0.10); color: #B91C1C; }
+
+.step-num {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-dark);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.notice-box {
+  padding: 16px;
+  background: var(--alpha-02);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--alpha-06);
+}
+
+/* ============================================================
    Card（纯白浮岛）
    ============================================================ */
 .card {
@@ -648,6 +722,25 @@ code, pre {
   border-radius: var(--radius-xl);
   padding: 18px 20px;
   box-shadow: var(--shadow-card);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
+}
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-float);
+  border-color: var(--alpha-25);
+}
+
+.card-heading {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--color-dark);
+  letter-spacing: -0.01em;
+}
+
+.card-caption {
+  font-size: 12px;
+  color: var(--alpha-60);
+  margin-top: 2px;
 }
 
 /* ============================================================
@@ -666,6 +759,14 @@ code, pre {
   font-size: 11px;
   color: var(--alpha-40);
   font-weight: 400;
+}
+
+.form-group { margin-bottom: 16px; }
+
+.form-action-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
 .form-input,
@@ -711,6 +812,31 @@ code, pre {
 }
 
 .settings-field .select { width: 100%; }
+
+.credential-secret-input {
+  position: relative;
+  width: 100%;
+}
+.credential-secret-input .select {
+  padding-right: 62px;
+  background-image: none;
+}
+.credential-reveal-btn {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  cursor: pointer;
+  font: 600 12px/1 var(--font-main);
+  padding: 6px;
+  border-radius: var(--radius-sm);
+}
+.credential-reveal-btn:hover { background: var(--color-primary-10); }
+.credential-reveal-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+.credential-reveal-btn:disabled { color: var(--alpha-40); cursor: default; background: transparent; }
 
 /* ============================================================
    Settings 页（core 提供：模型 / 凭证 / 飞书 / 其他）
@@ -1019,15 +1145,26 @@ code, pre {
   width: var(--agent-sidebar-width);
   min-width: var(--agent-sidebar-width);
   height: 100%;
-  background: #F4F3EE;
+  background: var(--ambient-canvas);
   border-left: 1px solid var(--alpha-10);
   display: flex;
   flex-direction: column;
-  transition: width 350ms var(--ease-silky), min-width 350ms var(--ease-silky), transform 350ms var(--ease-silky);
+  transition: width 350ms var(--ease-silky), min-width 350ms var(--ease-silky), transform 350ms var(--ease-silky), background-color 450ms var(--ease-silky);
   z-index: 50;
   position: relative;
   box-shadow: -4px 0 24px rgba(38, 33, 28, 0.04);
   overflow: hidden;
+}
+
+/* 磨砂穿透（规范 §4.4 纯白浮岛透明度）：55% 白色浮岛层叠加在情境画布之上，
+   画布色以约 45% 强度透出；侧栏随页面/分类画布流动，形成明亮磨砂玻璃 */
+.agent-sidebar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: rgba(255, 255, 255, 0.55);
+  pointer-events: none;
 }
 
 .agent-sidebar.collapsed {
@@ -1107,6 +1244,81 @@ code, pre {
   text-overflow: ellipsis;
 }
 
+/* 历史会话抽屉 */
+.agent-history-panel {
+  position: absolute;
+  inset: 57px 0 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: rgba(244, 243, 238, 0.98);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  animation: pageEnter 180ms var(--ease-silky);
+}
+.agent-history-panel[hidden] { display: none; }
+.agent-history-panel.loading .agent-history-list { opacity: 0.55; pointer-events: none; }
+.agent-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border-bottom: 1px solid var(--alpha-08);
+  background: var(--white-85);
+}
+.agent-history-head > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.agent-history-head strong { font-size: 13.5px; color: var(--color-dark); }
+.agent-history-head span { font-size: 11px; color: var(--alpha-40); }
+.agent-history-list {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 12px;
+  transition: opacity var(--transition-fast);
+}
+.agent-history-item {
+  width: 100%;
+  border: 1px solid var(--alpha-08);
+  border-radius: var(--radius-md);
+  background: #fff;
+  color: var(--color-dark);
+  padding: 10px 11px;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), transform var(--transition-fast);
+}
+.agent-history-item:hover:not(:disabled) { border-color: var(--alpha-15); background: var(--alpha-02); transform: translateY(-1px); }
+.agent-history-item:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+.agent-history-item:disabled { cursor: default; opacity: 0.55; }
+.agent-history-item.active { border-color: var(--color-primary); background: var(--color-primary-05); }
+.agent-history-item-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-history-item-top strong { overflow: hidden; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-history-active {
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-primary-10);
+  color: var(--color-primary);
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.agent-history-item-meta {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--alpha-40);
+  font: 10px/1.4 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-empty { padding: 28px 10px; color: var(--alpha-40); font-size: 12px; text-align: center; }
+
 /* 消息流 */
 .agent-messages-container {
   flex: 1;
@@ -1129,16 +1341,22 @@ code, pre {
 .chat-message-row.agent { align-items: flex-start; width: 100%; }
 
 .user-bubble {
-  background: var(--color-dark);
-  color: #FFFFFF;
+  background: var(--alpha-06);
+  border: 1px solid var(--alpha-10);
+  color: var(--color-dark);
   padding: 10px 14px;
   border-radius: 16px;
   border-bottom-right-radius: 4px;
   font-size: 13.5px;
   line-height: 1.5;
   max-width: 86%;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-xs);
   word-break: break-word;
+}
+
+/* 用户气泡内 markdown 正文锚定深炭黑（避免 .markdown-body 覆盖回深色，保持高对比） */
+.user-bubble .markdown-body {
+  color: var(--color-dark);
 }
 
 .agent-bubble {
@@ -1172,7 +1390,11 @@ code, pre {
 }
 
 .thinking-header {
-  font-weight: 600;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: 600 12px/1.4 var(--font-main);
   display: flex;
   justify-content: space-between;
   color: var(--alpha-60);
@@ -1213,7 +1435,11 @@ code, pre {
 }
 
 .tool-call-header {
+  width: 100%;
   padding: 8px 12px;
+  border: 0;
+  color: inherit;
+  font-family: inherit;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1260,6 +1486,7 @@ code, pre {
   flex-shrink: 0;
 }
 .tool-status-tag.running { background: var(--color-suggestion-bg); color: var(--color-suggestion); border: 1px solid var(--color-suggestion-border); }
+.tool-status-tag.pending { background: var(--alpha-06); color: var(--alpha-60); border: 1px solid var(--alpha-10); }
 .tool-status-tag.done { background: var(--color-success-bg); color: var(--color-success); border: 1px solid var(--color-success-border); }
 .tool-status-tag.error { background: var(--color-danger-bg); color: var(--color-danger); border: 1px solid var(--color-danger-border); }
 
@@ -1292,6 +1519,14 @@ code, pre {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
 }
+
+.message-run-meta {
+  margin-top: 8px;
+  color: var(--alpha-40);
+  font: 10px/1.4 var(--font-mono);
+  word-break: break-word;
+}
+.message-summary .agent-bubble { background: var(--alpha-02); border-style: dashed; }
 
 /* 输入区域 */
 .agent-input-container {
@@ -1357,6 +1592,27 @@ code, pre {
   display: flex;
   gap: 6px;
 }
+
+.agent-send-button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 9px;
+  background: var(--color-dark);
+  color: #fff;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
+}
+.agent-send-button svg { width: 16px; height: 16px; }
+.agent-send-button:hover:not(:disabled) { transform: translateY(-1px); }
+.agent-send-button:active:not(:disabled) { transform: scale(0.96); }
+.agent-send-button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.agent-send-button:disabled { background: var(--alpha-10); color: var(--alpha-40); cursor: default; }
+.agent-send-button.is-stop { background: var(--color-danger); color: #fff; }
 
 /* ============================================================
    Markdown 正文（通用）
