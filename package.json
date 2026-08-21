@@ -6,11 +6,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_NAME/pi-electron-core.git"
+    "url": "https://github.com/Jst-Well-Dan/pi-electron-core.git"
   },
-  "homepage": "https://github.com/YOUR_NAME/pi-electron-core#readme",
+  "homepage": "https://github.com/Jst-Well-Dan/pi-electron-core#readme",
   "bugs": {
-    "url": "https://github.com/YOUR_NAME/pi-electron-core/issues"
+    "url": "https://github.com/Jst-Well-Dan/pi-electron-core/issues"
   },
   "keywords": [
     "pi",
