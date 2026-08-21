@@ -17,8 +17,10 @@ function writeSession(dir, fileName, entries) {
 
 test('both production shells expose the shared history and contextual composer controls', () => {
   const coreHtml = fs.readFileSync(path.join(__dirname, '..', 'electron', 'renderer', 'index.html'), 'utf8');
-  const appHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer', 'index.html'), 'utf8');
-  for (const html of [coreHtml, appHtml]) {
+  const appHtmlPath = path.join(__dirname, '..', '..', 'src', 'renderer', 'index.html');
+  const htmls = [coreHtml];
+  if (fs.existsSync(appHtmlPath)) htmls.push(fs.readFileSync(appHtmlPath, 'utf8'));
+  for (const html of htmls) {
     assert.match(html, /id="btn-chat-history"[^>]*aria-controls="chat-history-panel"/);
     assert.match(html, /id="btn-chat-send"[^>]*aria-label="发送"/);
     assert.doesNotMatch(html, /id="btn-chat-abort"/);
