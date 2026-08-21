@@ -1,9 +1,38 @@
 {
   "name": "pi-electron-core",
   "version": "0.1.0",
-  "private": true,
-  "description": "打包好的项目级 pi：RPC 通信、常驻聊天会话、模型设置（含 API Key 管理），可独立运行（npm start -- --cwd <项目目录>），也可作为库被内容层（例如 xiya-content）依赖组装。不含任何具体项目的技能触发 prompt 或产出文件解析逻辑。",
+  "description": "项目级 pi 的 Electron 通用底座：RPC 通信、常驻聊天会话、模型设置（含 API Key 管理），可独立运行（npm start -- --cwd <项目目录>），也可作为库被内容层依赖组装。不含任何具体业务的技能触发或产出解析逻辑。",
   "main": "index.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_NAME/pi-electron-core.git"
+  },
+  "homepage": "https://github.com/YOUR_NAME/pi-electron-core#readme",
+  "bugs": {
+    "url": "https://github.com/YOUR_NAME/pi-electron-core/issues"
+  },
+  "keywords": [
+    "pi",
+    "electron",
+    "pi-coding-agent",
+    "rpc",
+    "chat",
+    "lark",
+    "feishu"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.js",
+    "src/",
+    "electron/",
+    "scripts/",
+    "pi-packages/",
+    "CORE_GUIDE.md",
+    "README.md"
+  ],
   "scripts": {
     "start": "electron electron/main.js",
     "dev": "electron electron/main.js --dev",

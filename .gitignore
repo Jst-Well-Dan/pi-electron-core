@@ -1,5 +1,8 @@
 node_modules/
 *.log
 .pi-electron-core/
-
 .impeccable/
+dist/
+out/
+.DS_Store
+Thumbs.db
