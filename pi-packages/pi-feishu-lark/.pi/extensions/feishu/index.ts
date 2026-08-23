@@ -237,6 +237,9 @@ export default function feishuExtension(pi: ExtensionAPI) {
   }
 
   function quoteShell(value: string) {
+    if (process.platform === "win32") {
+      return `"${value.replace(/"/g, '""')}"`;
+    }
     return `'${value.replace(/'/g, `'\\''`)}'`;
   }
 
@@ -260,6 +263,7 @@ export default function feishuExtension(pi: ExtensionAPI) {
     const { piBin, args } = daemonSpec();
     // Keep PI_FEISHU_ROOT in the command line as well as the spawned env so
     // orphan reaping can target only this project's daemon pipeline.
+    // Windows does not use this Bash wrapper (see startDaemon win32 branch).
     return `tail -f /dev/null | exec env PI_FEISHU_ROOT=${quoteShell(ROOT_DIR)} ${quoteShell(piBin)} ${args.map(quoteShell).join(" ")}`;
   }
 
@@ -336,14 +340,29 @@ export default function feishuExtension(pi: ExtensionAPI) {
       ensureRoot();
       trimDaemonLogIfNeeded();
       const logFd = openSync(DAEMON_LOG_PATH, "a");
-      let child;
+      let child: ReturnType<typeof spawn>;
+      let spawnCommandForLog: string;
       try {
-        child = spawn("bash", ["-lc", daemonCommand()], {
-          detached: true,
-          cwd: process.cwd(),
-          env: { ...process.env, PI_FEISHU_DAEMON: "1", PI_FEISHU_ROOT: ROOT_DIR },
-          stdio: ["ignore", logFd, logFd],
-        });
+        if (process.platform === "win32") {
+          spawnCommandForLog = `${quoteShell(spec.piBin)} ${spec.args.map(quoteShell).join(" ")}`;
+          // Windows: pi is installed as pi.cmd, direct spawn without shell fails with ENOENT.
+          // Use cmd /c with separate args so PATHEXT (.CMD) resolution works.
+          child = spawn("cmd", ["/c", spec.piBin, ...spec.args], {
+            detached: true,
+            cwd: process.cwd(),
+            env: { ...process.env, PI_FEISHU_DAEMON: "1", PI_FEISHU_ROOT: ROOT_DIR },
+            stdio: ["ignore", logFd, logFd],
+            windowsHide: true,
+          } as any);
+        } else {
+          spawnCommandForLog = daemonCommand();
+          child = spawn("bash", ["-lc", spawnCommandForLog], {
+            detached: true,
+            cwd: process.cwd(),
+            env: { ...process.env, PI_FEISHU_DAEMON: "1", PI_FEISHU_ROOT: ROOT_DIR },
+            stdio: ["ignore", logFd, logFd],
+          });
+        }
       } catch (error) {
         debugLog("feishu.daemon.spawn_throw", {
           launcherPid: process.pid,
@@ -353,7 +372,7 @@ export default function feishuExtension(pi: ExtensionAPI) {
         });
         throw error;
       }
-      debugLog("feishu.daemon.spawned", { launcherPid: process.pid, wrapperPid: child.pid, command: daemonCommand() });
+      debugLog("feishu.daemon.spawned", { launcherPid: process.pid, wrapperPid: child.pid, command: spawnCommandForLog });
       child.once("error", (error) => {
         debugLog("feishu.daemon.child_error", { launcherPid: process.pid, wrapperPid: child.pid, error: error.message });
       });
