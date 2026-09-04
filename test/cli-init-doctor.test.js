@@ -50,4 +50,19 @@ describe('cli init + doctor', () => {
     assert.match(out, /10\/10 通过/);
     assert.match(out, /无业务凭证/);
   });
+
+  it('main-app.js 在无 electron 环境也可 require（CLI 校验场景，防 F1 回归）', () => {
+    const target = path.join(__dirname, '..', 'electron', 'main-app.js');
+    const code = [
+      "const M = require('node:module');",
+      'const orig = M._load;',
+      'M._load = function (req) { if (req === \'electron\') throw new Error(\'no electron here\');',
+      '  return orig.apply(this, arguments); };',
+      `const m = require(${JSON.stringify(target)});`,
+      "if (typeof m.registerCoreIpc !== 'function') throw new Error('exports missing');",
+      "console.log('lazy-ok');",
+    ].join('\n');
+    const out = execFileSync(process.execPath, ['-e', code], { encoding: 'utf8' });
+    assert.match(out, /lazy-ok/);
+  });
 });

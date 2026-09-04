@@ -8,7 +8,7 @@
  * 飞书 / Lark（feishu:*）、数据目录（dataRoot:*）。这些 handler 都依赖调用方
  * 注入的服务实例（services），core 本身不内置任何具体业务的凭证/字段。
  */
-const { shell } = require('electron');
+/* electron 只在 handler 内按需加载：保持本模块在无 electron 环境（如 CLI 校验）也可 require */
 
 const {
   ChatSessionManager,
@@ -51,6 +51,7 @@ function registerCoreIpc({ ipcMain, chatSession, piSettingsPath, emitToRenderer 
 
   // ---- 系统能力：由 preload 暴露给渲染层，用于 OAuth / 飞书扫码授权等外部网页 ----
   ipcMain.handle('shell:openExternal', async (_e, url) => {
+    const { shell } = require('electron');
     const value = String(url || '').trim();
     if (!/^https?:\/\//i.test(value)) throw new Error('只允许打开 http/https 链接。');
     await shell.openExternal(value);

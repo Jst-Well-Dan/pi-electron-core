@@ -83,7 +83,7 @@ async function runShotSequence() {
   const shot = async (name) => {
     try {
       await mainWindow.webContents.capturePage(); // 丢弃隐藏窗口的过期合成帧
-      await sleep(600);
+      await sleep(1000);
       const img = await mainWindow.webContents.capturePage();
       fs.writeFileSync(path.join(dir, name), img.toPNG());
       console.log('[shot] saved', name);
@@ -109,6 +109,7 @@ async function runShotSequence() {
     for (const t of tabList) {
       await js('window.__shotTab=' + JSON.stringify(t) + ';');
       await js('(function(){var tab=document.querySelector(\\'[data-settings-tab="\\' + window.__shotTab + \\'"]\\');if(tab)tab.click();})()');
+      await sleep(1500); // 点击后等重绘，高负载机器上合成帧滞后
       await shot((n < 10 ? '0' : '') + n + '-settings-' + t + '.png');
       n += 1;
     }
@@ -453,9 +454,10 @@ async function runInit(argv) {
   for (const p of pages) write(`electron/renderer/pages/${p.id}.js`, pageJs(p.id));
   write('electron/renderer/pages/settings-ext.js', settingsExtJs());
 
-  console.log(`\n[init] 完成：${desk}`);
-  console.log('[init] 下一步：cd desktop && npm install && npm start');
-  console.log('[init] 校验：npx github:Jst-Well-Dan/pi-electron-core doctor --root <应用根>');
+  console.log(`\n[init] 脚手架已生成：${desk}`);
+  console.log(`[init] 应用根：${root}（desktop/ 是其子目录；--cwd 与 doctor 的 --root 都指应用根，不是 desktop/）`);
+  console.log('[init] 下一步：cd desktop && npm install && npm start（首次安装约 4 分钟，electron 二进制下载无输出属正常）');
+  console.log('[init] 校验：npx github:Jst-Well-Dan/pi-electron-core doctor --root <应用根>（必须 10/10 再往下走）');
   return 0;
 }
 
