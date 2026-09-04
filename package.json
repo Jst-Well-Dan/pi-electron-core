@@ -1,6 +1,6 @@
 {
   "name": "pi-electron-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "项目级 pi 的 Electron 通用底座：RPC 通信、常驻聊天会话、模型设置（含 API Key 管理），可独立运行（npm start -- --cwd <项目目录>），也可作为库被内容层依赖组装。不含任何具体业务的技能触发或产出解析逻辑。",
   "main": "index.js",
   "license": "MIT",
@@ -31,7 +31,8 @@
     "scripts/",
     "pi-packages/",
     "CORE_GUIDE.md",
-    "README.md"
+    "README.md",
+    "bin/"
   ],
   "scripts": {
     "start": "electron electron/main.js",
@@ -47,5 +48,8 @@
   },
   "devDependencies": {
     "electron": "43.2.0"
+  },
+  "bin": {
+    "pi-electron-core": "bin/pi-electron-core.js"
   }
 }
